@@ -19,6 +19,7 @@
   - 钩住私有 `_UIBackdropViewSettings -setDefaultValues`，直接调 `blurRadius` / `saturationDeltaFactor` /
     `grayscaleTint*` —— **控制中心、通知中心、文件夹、Dock 背景实际由 `_UIBackdropView` 渲染，靠这里才生效**。
     所有私有 setter 都用 `-respondsToSelector:` 保护，不同 iOS 版本缺方法时自动跳过。
+    同时在 `setBlurRadius:` / `setSaturationDeltaFactor:` 里做强制下限，避免 iOS 17 在默认值之后又写回原值。
   - 钩 `_UIBackdropView -layoutSubviews`，在圆角足够大的 backdrop 上叠加 45° 白色边缘高光（CALayer 渐变描边），
     对应参考库里的 specular highlight。
   - 同时钩 `UIVisualEffectView -initWithEffect:`，覆盖使用公开毛玻璃的界面。

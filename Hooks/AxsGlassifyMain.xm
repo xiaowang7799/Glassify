@@ -33,17 +33,39 @@ static BOOL axs_glassify_darkValue(void) {
     // Stronger frost with a milky tint; guarded because signatures vary by iOS.
     // Reference recipe: moderate blur + strong vibrancy (saturation) + light tint.
     if ([self respondsToSelector:@selector(setBlurRadius:)]) {
-        [self setBlurRadius:14.0 + strength * 36.0];
+        [self setBlurRadius:22.0 + strength * 48.0];
     }
     if ([self respondsToSelector:@selector(setSaturationDeltaFactor:)]) {
-        [self setSaturationDeltaFactor:1.4 + strength * 0.8];
+        [self setSaturationDeltaFactor:1.7 + strength * 0.9];
     }
     if ([self respondsToSelector:@selector(setGrayscaleTintAlpha:)]) {
-        [self setGrayscaleTintAlpha:0.05 + strength * 0.10];
+        [self setGrayscaleTintAlpha:0.06 + strength * 0.12];
     }
     if ([self respondsToSelector:@selector(setGrayscaleTintLevel:)]) {
         [self setGrayscaleTintLevel:dark ? 0.10 : 0.90];
     }
+}
+
+// iOS 17 often writes these values again after -setDefaultValues; clamp every
+// setter so later writes cannot undo the effect.
+- (void)setBlurRadius:(double)radius {
+    if ([[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled]) {
+        double target = 22.0 + axs_glassify_strengthValue() * 48.0;
+        if (radius < target) {
+            radius = target;
+        }
+    }
+    %orig(radius);
+}
+
+- (void)setSaturationDeltaFactor:(double)factor {
+    if ([[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled]) {
+        double target = 1.7 + axs_glassify_strengthValue() * 0.9;
+        if (factor < target) {
+            factor = target;
+        }
+    }
+    %orig(factor);
 }
 
 %end
@@ -64,6 +86,12 @@ static BOOL axs_glassify_darkValue(void) {
 - (instancetype)initWithEffect:(UIVisualEffect *)effect {
     effect = [AxsGlassifyGlass axs_glassify_transformIncoming:effect forView:self];
     return %orig(effect);
+}
+
+// Surfaces that use the public effect view also get the specular rim.
+- (void)layoutSubviews {
+    %orig;
+    [AxsGlassifyGlass axs_glassify_decorateBackdropView:self];
 }
 
 %end
