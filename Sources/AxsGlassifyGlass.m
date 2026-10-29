@@ -128,12 +128,13 @@ static NSString * const kAxsGlassifyRimName = @"AxsGlassifyRim";
         rim = [CAGradientLayer layer];
         rim.name = kAxsGlassifyRimName;
         // 45-degree white highlight, fading out along the edge (reference-style).
-        rim.colors = @[(id)[UIColor colorWithWhite:1.0 alpha:0.55].CGColor,
-                       (id)[UIColor colorWithWhite:1.0 alpha:0.10].CGColor,
+        // LuCI tokens: border rgba(255,255,255,.8) + inset rgba(255,255,255,.95).
+        rim.colors = @[(id)[UIColor colorWithWhite:1.0 alpha:0.80].CGColor,
+                       (id)[UIColor colorWithWhite:1.0 alpha:0.25].CGColor,
                        (id)[UIColor clearColor].CGColor];
-        rim.locations = @[@0.0, @0.35, @1.0];
+        rim.locations = @[@0.0, @0.40, @1.0];
         rim.startPoint = CGPointMake(0.0, 0.0);
-        rim.endPoint = CGPointMake(0.85, 1.0);
+        rim.endPoint = CGPointMake(1.0, 1.0);
         rim.zPosition = 1000.0;
         CAShapeLayer *mask = [CAShapeLayer layer];
         mask.fillColor = nil;

@@ -52,8 +52,9 @@ sh build.sh all               # rootful + rootless + roothide
 
 ## 说明
 
-视觉参数参考了 Apache-2.0 的 Kyant0/AndroidLiquidGlass（低模糊 + 高饱和 vibrancy + 45° 高光），
-但代码是独立用 UIKit/CoreAnimation 实现的，未拷贝其 Kotlin/AGSL 代码。
+视觉参数参考了 Kyant0/AndroidLiquidGlass（Apache-2.0）与 zzsj0928/luci-theme-liquid 的玻璃 token：
+模糊 26、饱和 1.6、白色 tint 0.42、白色描边 0.8、内高光 0.95。
+代码是独立用 UIKit/CoreAnimation 实现的，未拷贝其 Kotlin/AGSL 或 CSS 代码。
 真正的折射/透镜（lens）与色散依赖 GPU shader 实时采样背景，SpringBoard 私有 backdrop 不开放，无法移植；
 这里只能做到模糊 + 饱和度 + 色调 + 边缘高光的近似。
 `_UIBackdropView` 是私有 API，不同 iOS 版本的方法集合会变化，代码已做 `-respondsToSelector:` 保护；

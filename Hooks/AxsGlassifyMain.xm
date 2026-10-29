@@ -32,17 +32,18 @@ static BOOL axs_glassify_darkValue(void) {
 
     // Stronger frost with a milky tint; guarded because signatures vary by iOS.
     // Reference recipe: moderate blur + strong vibrancy (saturation) + light tint.
+    // Tuned to the LuCI liquid theme tokens: blur 26px, saturate 1.6, white 0.42.
     if ([self respondsToSelector:@selector(setBlurRadius:)]) {
-        [self setBlurRadius:22.0 + strength * 48.0];
+        [self setBlurRadius:12.0 + strength * 40.0];
     }
     if ([self respondsToSelector:@selector(setSaturationDeltaFactor:)]) {
-        [self setSaturationDeltaFactor:1.7 + strength * 0.9];
+        [self setSaturationDeltaFactor:1.3 + strength * 0.9];
     }
     if ([self respondsToSelector:@selector(setGrayscaleTintAlpha:)]) {
-        [self setGrayscaleTintAlpha:0.06 + strength * 0.12];
+        [self setGrayscaleTintAlpha:0.25 + strength * 0.35];
     }
     if ([self respondsToSelector:@selector(setGrayscaleTintLevel:)]) {
-        [self setGrayscaleTintLevel:dark ? 0.10 : 0.90];
+        [self setGrayscaleTintLevel:dark ? 0.10 : 1.0];
     }
 }
 
@@ -50,7 +51,7 @@ static BOOL axs_glassify_darkValue(void) {
 // setter so later writes cannot undo the effect.
 - (void)setBlurRadius:(double)radius {
     if ([[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled]) {
-        double target = 22.0 + axs_glassify_strengthValue() * 48.0;
+        double target = 12.0 + axs_glassify_strengthValue() * 40.0;
         if (radius < target) {
             radius = target;
         }
@@ -60,7 +61,7 @@ static BOOL axs_glassify_darkValue(void) {
 
 - (void)setSaturationDeltaFactor:(double)factor {
     if ([[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled]) {
-        double target = 1.7 + axs_glassify_strengthValue() * 0.9;
+        double target = 1.3 + axs_glassify_strengthValue() * 0.9;
         if (factor < target) {
             factor = target;
         }
