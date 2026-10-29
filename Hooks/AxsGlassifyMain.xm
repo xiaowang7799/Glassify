@@ -6,14 +6,24 @@
 #import "AxsGlassifyPreferences.h"
 
 // Resolve the SpringBoard key window the glass layer attaches to.
+// UIApplication.windows is deprecated since iOS 15, so walk the connected scenes instead.
 static UIWindow *axs_glassify_mainWindow(void) {
-    UIApplication *app = [UIApplication sharedApplication];
-    for (UIWindow *window in app.windows) {
-        if (window.isKeyWindow) {
-            return window;
+    UIWindow *fallback = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        for (UIWindow *window in windowScene.windows) {
+            if (window.isKeyWindow) {
+                return window;
+            }
+        }
+        if (!fallback) {
+            fallback = windowScene.windows.firstObject;
         }
     }
-    return app.windows.firstObject;
+    return fallback;
 }
 
 static double axs_glassify_configDouble(AxsGlassifyConfig *config, NSString *key, double fallback) {
