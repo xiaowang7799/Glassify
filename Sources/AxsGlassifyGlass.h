@@ -12,4 +12,7 @@
                                            forView:(UIVisualEffectView *)view;
 // Re-apply (or restore) every existing effect view, e.g. after a settings change.
 + (void)axs_glassify_refreshAllWindows;
+// Adds a 45-degree specular rim to a private backdrop view (liquid-glass highlight);
+// removes it when disabled. Safe to call from -layoutSubviews repeatedly.
++ (void)axs_glassify_decorateBackdropView:(UIView *)view;
 @end

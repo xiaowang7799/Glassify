@@ -74,6 +74,9 @@ static const void *kAxsGlassifyOriginalEffectKey = &kAxsGlassifyOriginalEffectKe
             }
         }
     }
+    if ([NSStringFromClass([view class]) containsString:@"BackdropView"]) {
+        [self axs_glassify_decorateBackdropView:view];
+    }
     for (UIView *subview in view.subviews) {
         [self axs_glassify_refreshView:subview];
     }
@@ -88,6 +91,65 @@ static const void *kAxsGlassifyOriginalEffectKey = &kAxsGlassifyOriginalEffectKe
             [self axs_glassify_refreshView:window];
         }
     }
+}
+
+static NSString * const kAxsGlassifyRimName = @"AxsGlassifyRim";
+
++ (void)axs_glassify_removeRimFromView:(UIView *)view {
+    for (CALayer *layer in [view.layer.sublayers copy]) {
+        if ([layer.name isEqualToString:kAxsGlassifyRimName]) {
+            [layer removeFromSuperlayer];
+        }
+    }
+}
+
++ (void)axs_glassify_decorateBackdropView:(UIView *)view {
+    if (![self axs_glassify_enabled]) {
+        [self axs_glassify_removeRimFromView:view];
+        return;
+    }
+    CGSize size = view.bounds.size;
+    CGFloat radius = view.layer.cornerRadius;
+    // Only rounded, reasonably large surfaces get the specular rim; tiny or
+    // unrounded backdrops look wrong with a border.
+    if (size.width < 70.0 || size.height < 40.0 || radius < 6.0) {
+        [self axs_glassify_removeRimFromView:view];
+        return;
+    }
+    CAGradientLayer *rim = nil;
+    for (CALayer *layer in view.layer.sublayers) {
+        if ([layer.name isEqualToString:kAxsGlassifyRimName] &&
+            [layer isKindOfClass:[CAGradientLayer class]]) {
+            rim = (CAGradientLayer *)layer;
+            break;
+        }
+    }
+    if (!rim) {
+        rim = [CAGradientLayer layer];
+        rim.name = kAxsGlassifyRimName;
+        // 45-degree white highlight, fading out along the edge (reference-style).
+        rim.colors = @[(id)[UIColor colorWithWhite:1.0 alpha:0.55].CGColor,
+                       (id)[UIColor colorWithWhite:1.0 alpha:0.10].CGColor,
+                       (id)[UIColor clearColor].CGColor];
+        rim.locations = @[@0.0, @0.35, @1.0];
+        rim.startPoint = CGPointMake(0.0, 0.0);
+        rim.endPoint = CGPointMake(0.85, 1.0);
+        rim.zPosition = 1000.0;
+        CAShapeLayer *mask = [CAShapeLayer layer];
+        mask.fillColor = nil;
+        mask.strokeColor = [UIColor whiteColor].CGColor;
+        mask.lineWidth = 1.2;
+        rim.mask = mask;
+        [view.layer addSublayer:rim];
+    }
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    rim.frame = view.bounds;
+    CAShapeLayer *mask = (CAShapeLayer *)rim.mask;
+    CGRect rect = CGRectInset(view.bounds, 0.6, 0.6);
+    mask.path = [UIBezierPath bezierPathWithRoundedRect:rect
+                                           cornerRadius:MAX(0.0, radius - 0.6)].CGPath;
+    [CATransaction commit];
 }
 
 @end

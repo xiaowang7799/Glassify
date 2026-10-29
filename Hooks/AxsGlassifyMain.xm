@@ -31,18 +31,29 @@ static BOOL axs_glassify_darkValue(void) {
     BOOL dark = axs_glassify_darkValue();
 
     // Stronger frost with a milky tint; guarded because signatures vary by iOS.
+    // Reference recipe: moderate blur + strong vibrancy (saturation) + light tint.
     if ([self respondsToSelector:@selector(setBlurRadius:)]) {
-        [self setBlurRadius:18.0 + strength * 62.0];
+        [self setBlurRadius:14.0 + strength * 36.0];
     }
     if ([self respondsToSelector:@selector(setSaturationDeltaFactor:)]) {
-        [self setSaturationDeltaFactor:1.0 + strength * 1.2];
+        [self setSaturationDeltaFactor:1.4 + strength * 0.8];
     }
     if ([self respondsToSelector:@selector(setGrayscaleTintAlpha:)]) {
-        [self setGrayscaleTintAlpha:0.10 + strength * 0.15];
+        [self setGrayscaleTintAlpha:0.05 + strength * 0.10];
     }
     if ([self respondsToSelector:@selector(setGrayscaleTintLevel:)]) {
         [self setGrayscaleTintLevel:dark ? 0.10 : 0.90];
     }
+}
+
+%end
+
+// Add the 45-degree specular rim to each backdrop surface as it lays out.
+%hook _UIBackdropView
+
+- (void)layoutSubviews {
+    %orig;
+    [AxsGlassifyGlass axs_glassify_decorateBackdropView:self];
 }
 
 %end

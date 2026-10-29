@@ -19,6 +19,8 @@
   - 钩住私有 `_UIBackdropViewSettings -setDefaultValues`，直接调 `blurRadius` / `saturationDeltaFactor` /
     `grayscaleTint*` —— **控制中心、通知中心、文件夹、Dock 背景实际由 `_UIBackdropView` 渲染，靠这里才生效**。
     所有私有 setter 都用 `-respondsToSelector:` 保护，不同 iOS 版本缺方法时自动跳过。
+  - 钩 `_UIBackdropView -layoutSubviews`，在圆角足够大的 backdrop 上叠加 45° 白色边缘高光（CALayer 渐变描边），
+    对应参考库里的 specular highlight。
   - 同时钩 `UIVisualEffectView -initWithEffect:`，覆盖使用公开毛玻璃的界面。
 - `Sources/AxsGlassifyGlass.{h,m}`：
   - 把任意 `UIBlurEffect` 重映射为目标强度/深浅的材质；
@@ -49,7 +51,10 @@ sh build.sh all               # rootful + rootless + roothide
 
 ## 说明
 
-本工程是独立原创实现，与任何第三方付费插件无代码或逆向关系。
+视觉参数参考了 Apache-2.0 的 Kyant0/AndroidLiquidGlass（低模糊 + 高饱和 vibrancy + 45° 高光），
+但代码是独立用 UIKit/CoreAnimation 实现的，未拷贝其 Kotlin/AGSL 代码。
+真正的折射/透镜（lens）与色散依赖 GPU shader 实时采样背景，SpringBoard 私有 backdrop 不开放，无法移植；
+这里只能做到模糊 + 饱和度 + 色调 + 边缘高光的近似。
 `_UIBackdropView` 是私有 API，不同 iOS 版本的方法集合会变化，代码已做 `-respondsToSelector:` 保护；
 若某个界面仍无变化，说明该界面走了别的渲染路径，需要按设备版本再定位对应类。
 静态检查与 CI 编译通过不代表真机视觉验收。
