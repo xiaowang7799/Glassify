@@ -32,7 +32,7 @@
         </dict>
         <dict>
             <key>cell</key><string>PSSwitchCell</string>
-            <key>label</key><string>深色玻璃</string>
+            <key>label</key><string>强制深色玻璃</string>
             <key>key</key><string>dark</string>
             <key>defaults</key><string>com.axs.glassify</string>
             <key>default</key><false/>
