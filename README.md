@@ -15,8 +15,11 @@
 
 ## 实现要点
 
-- `Hooks/AxsGlassifyMain.xm`：钩住 `UIVisualEffectView -initWithEffect:`，在系统创建模糊视图时改写其效果。
-  因为只作用于"已经模糊"的视图，桌面不受影响。
+- `Hooks/AxsGlassifyMain.xm`：
+  - 钩住私有 `_UIBackdropViewSettings -setDefaultValues`，直接调 `blurRadius` / `saturationDeltaFactor` /
+    `grayscaleTint*` —— **控制中心、通知中心、文件夹、Dock 背景实际由 `_UIBackdropView` 渲染，靠这里才生效**。
+    所有私有 setter 都用 `-respondsToSelector:` 保护，不同 iOS 版本缺方法时自动跳过。
+  - 同时钩 `UIVisualEffectView -initWithEffect:`，覆盖使用公开毛玻璃的界面。
 - `Sources/AxsGlassifyGlass.{h,m}`：
   - 把任意 `UIBlurEffect` 重映射为目标强度/深浅的材质；
   - 用关联对象记住每个视图原始 effect，关闭时精确还原；
@@ -47,4 +50,6 @@ sh build.sh all               # rootful + rootless + roothide
 ## 说明
 
 本工程是独立原创实现，与任何第三方付费插件无代码或逆向关系。
-静态检查与 CI 编译通过不代表真机视觉验收；不同 iOS 版本的控件实现可能不同，需按设备微调。
+`_UIBackdropView` 是私有 API，不同 iOS 版本的方法集合会变化，代码已做 `-respondsToSelector:` 保护；
+若某个界面仍无变化，说明该界面走了别的渲染路径，需要按设备版本再定位对应类。
+静态检查与 CI 编译通过不代表真机视觉验收。

@@ -1,11 +1,53 @@
 #import <UIKit/UIKit.h>
+#import <math.h>
 #import "AxsGlassifyConfig.h"
 #import "AxsGlassifyGlass.h"
 #import "AxsGlassifyPreferences.h"
+#import "AxsGlassifyPrivate.h"
 
-// Restyle every blur effect the system creates (control center, notifications,
-// folders, dock, app switcher, ...). The home screen has no blur effect over its
-// icons, so it stays sharp instead of being covered by a full-screen overlay.
+static double axs_glassify_strengthValue(void) {
+    id value = [[AxsGlassifyConfig axs_glassify_shared] axs_glassify_valueForKey:@"strength" defaultValue:@(0.35)];
+    double strength = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.35;
+    if (!isfinite(strength)) strength = 0.35;
+    return fmax(0.0, fmin(1.0, strength));
+}
+
+static BOOL axs_glassify_darkValue(void) {
+    id value = [[AxsGlassifyConfig axs_glassify_shared] axs_glassify_valueForKey:@"dark" defaultValue:@(NO)];
+    return [value isKindOfClass:[NSNumber class]] ? [value boolValue] : NO;
+}
+
+// SpringBoard's control center / notification center / folder / dock backgrounds
+// are rendered by the private _UIBackdropView, which reads these settings. Tuning
+// them here is what actually changes those surfaces.
+%hook _UIBackdropViewSettings
+
+- (void)setDefaultValues {
+    %orig;
+    if (![[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled]) {
+        return;
+    }
+    double strength = axs_glassify_strengthValue();
+    BOOL dark = axs_glassify_darkValue();
+
+    // Stronger frost with a milky tint; guarded because signatures vary by iOS.
+    if ([self respondsToSelector:@selector(setBlurRadius:)]) {
+        [self setBlurRadius:18.0 + strength * 62.0];
+    }
+    if ([self respondsToSelector:@selector(setSaturationDeltaFactor:)]) {
+        [self setSaturationDeltaFactor:1.0 + strength * 1.2];
+    }
+    if ([self respondsToSelector:@selector(setGrayscaleTintAlpha:)]) {
+        [self setGrayscaleTintAlpha:0.10 + strength * 0.15];
+    }
+    if ([self respondsToSelector:@selector(setGrayscaleTintLevel:)]) {
+        [self setGrayscaleTintLevel:dark ? 0.10 : 0.90];
+    }
+}
+
+%end
+
+// Some system surfaces still use the public effect view; restyle those too.
 %hook UIVisualEffectView
 
 - (instancetype)initWithEffect:(UIVisualEffect *)effect {
