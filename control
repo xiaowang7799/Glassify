@@ -1,0 +1,11 @@
+Package: com.axs.glassify
+Name: 液态玻璃
+Version: 5.2.0
+Architecture: iphoneos-arm
+Description: 为 SpringBoard 叠加可调节的液态玻璃毛玻璃效果
+Maintainer: Axs
+Author: Axs
+Section: Axs-Tweaks
+Depends: mobilesubstrate, preferenceloader
+Icon: https://axs66.github.io/pro/icon/glassify.png
+Sileodepiction: https://axs66.github.io/pro/sileodepiction/glassify/js.json

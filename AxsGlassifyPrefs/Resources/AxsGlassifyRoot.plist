@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>title</key><string>液态玻璃</string>
+    <key>items</key>
+    <array>
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>基本设置</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSSwitchCell</string>
+            <key>label</key><string>启用插件</string>
+            <key>key</key><string>enabled</string>
+            <key>defaults</key><string>com.axs.glassify</string>
+            <key>default</key><false/>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>玻璃外观</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>cellClass</key><string>AxsGlassifySliderCell</string>
+            <key>label</key><string>玻璃强度</string>
+            <key>key</key><string>strength</string>
+            <key>defaults</key><string>com.axs.glassify</string>
+            <key>default</key><real>0.35</real>
+            <key>min</key><real>0.0</real>
+            <key>max</key><real>1.0</real>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSSwitchCell</string>
+            <key>label</key><string>深色玻璃</string>
+            <key>key</key><string>dark</string>
+            <key>defaults</key><string>com.axs.glassify</string>
+            <key>default</key><false/>
+        </dict>
+
+    </array>
+</dict>
+</plist>

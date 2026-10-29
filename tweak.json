@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "Glassify",
+  "id": "glassify",
+  "display_name": "液态玻璃",
+  "class_prefix": "AxsGlassify",
+  "symbol_prefix": "axs_glassify",
+  "package": "com.axs.glassify",
+  "bundle": "com.apple.springboard",
+  "sdk_version": "16.5",
+  "minimum_ios": "14.0",
+  "preferences": true,
+  "slider": true,
+  "github_actions": true
+}
