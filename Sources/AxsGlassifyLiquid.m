@@ -14,6 +14,7 @@ static NSString * const kAxsGlassifyPlatterFringeName = @"AxsGlassifyPlatterFrin
 @property (nonatomic, weak) UIView *backgroundHost;
 @property (nonatomic, copy) NSArray<UIView *> *suppressedViews;
 @property (nonatomic, assign) CGFloat cornerRadius;
+@property (nonatomic, assign) CGSize lastBoundsSize;
 @property (nonatomic, assign) double appliedStrength;
 @property (nonatomic, assign) BOOL appliedDark;
 @property (nonatomic, assign) BOOL updating;
@@ -38,6 +39,18 @@ static BOOL axs_glassify_liquid_dark(void) {
     id value = [[AxsGlassifyConfig axs_glassify_shared] axs_glassify_valueForKey:@"dark"
                                                                    defaultValue:@(NO)];
     return [value isKindOfClass:[NSNumber class]] ? [value boolValue] : NO;
+}
+
+// 通知圆角由「锁屏通知 · 外观」里的 corner_radius 统一决定：玻璃层和渐变层读同一个键，
+// 不会再出现两层各自用不同半径。
+static double axs_glassify_liquid_cornerRadius(void) {
+    id value = [[AxsGlassifyConfig axs_glassify_shared] axs_glassify_valueForKey:@"corner_radius"
+                                                                   defaultValue:@(0)];
+    double radius = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.0;
+    if (!isfinite(radius) || radius < 0.5) {
+        return 0.0;
+    }
+    return fmax(0.0, fmin(60.0, radius));
 }
 
 static BOOL axs_glassify_liquid_notificationsEnabled(void) {
@@ -110,6 +123,13 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
 }
 
 @implementation AxsGlassifyLiquid
+
++ (BOOL)axs_glassify_isGlassView:(UIView *)view {
+    if (!view) {
+        return NO;
+    }
+    return [objc_getAssociatedObject(view, kAxsGlassifyPlatterStateKey) boolValue];
+}
 
 #pragma mark - Material
 
@@ -224,6 +244,9 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         glass = [[UIVisualEffectView alloc] initWithEffect:nil];
         glass.userInteractionEnabled = NO;
         glass.clipsToBounds = YES;
+        // 标记自己，动画引擎找背景层时要跳过它。
+        objc_setAssociatedObject(glass, kAxsGlassifyPlatterStateKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         // Behind the label/icon content, in front of the (now hidden) backdrop.
         [platter insertSubview:glass atIndex:0];
@@ -247,16 +270,22 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         state.appliedDark = dark;
     }
 
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    glass.frame = bounds;
-    glass.layer.cornerRadius = radius;
-    glass.layer.cornerCurve = kCACornerCurveContinuous;
-    glass.layer.masksToBounds = YES;
-    [CATransaction commit];
+    // 布局和圆角都没变就跳过：滚动时 -layoutSubviews 触发非常频繁。
+    BOOL geometryChanged = !CGSizeEqualToSize(state.lastBoundsSize, bounds.size) ||
+                           fabs(state.cornerRadius - radius) > 0.5;
+    if (geometryChanged) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        glass.frame = bounds;
+        glass.layer.cornerRadius = radius;
+        glass.layer.cornerCurve = kCACornerCurveContinuous;
+        glass.layer.masksToBounds = YES;
+        [CATransaction commit];
 
-    state.cornerRadius = radius;
-    [self axs_glassify_decorateGlassView:glass radius:radius];
+        state.cornerRadius = radius;
+        state.lastBoundsSize = bounds.size;
+        [self axs_glassify_decorateGlassView:glass radius:radius];
+    }
 
     [axs_glassify_platter_registry() addObject:platter];
     state.updating = NO;
@@ -284,6 +313,10 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
 
 + (CGFloat)axs_glassify_cornerRadiusForPlatter:(UIView *)platter
                                          state:(AxsGlassifyPlatterState *)state {
+    double preferred = axs_glassify_liquid_cornerRadius();
+    if (preferred > 0.5) {
+        return (CGFloat)preferred;
+    }
     CGFloat radius = platter.layer.cornerRadius;
     for (UIView *view in state.suppressedViews) {
         if (view.layer.cornerRadius > radius) {

@@ -1,0 +1,1135 @@
+#import "AxsGlassifyNotifyAnimator.h"
+#import "AxsGlassifyLiquid.h"
+#import "AxsGlassifyNotifyConfig.h"
+#import "AxsGlassifyPreferences.h"
+#import <QuartzCore/QuartzCore.h>
+#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+#import <math.h>
+
+// 视图是否已播过入场/爆发（滚动复用不重播）。
+static const void *kAxsLiquidSeenKey = &kAxsLiquidSeenKey;
+
+// 单条通知的效果容器（视图弱引用，通知消失自动失效）。
+@interface AxsGlassifyNotifyEffect : NSObject
+@property (nonatomic, weak) UIView *view;
+@property (nonatomic, strong) CAGradientLayer *gradient;   // 流动渐变背景
+@property (nonatomic, strong) NSMutableArray<CALayer *> *fishLayers;  // 鱼缸游鱼
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *fishNextBubble;  // 每条鱼的吐泡倒计时
+@property (nonatomic, assign) double fishSeed;   // 每条通知随机相位（鱼游互不同步）
+@property (nonatomic, assign) double particleJitter;   // 每条通知粒子发射率抖动（发射互不同步）
+@property (nonatomic, weak) UILabel *titleLabel;       // 标题标签（最大的字）
+@property (nonatomic, weak) UIImageView *iconView;     // 应用图标
+@property (nonatomic, strong) CAGradientLayer *iconGlow;  // 图标光晕（背后径向渐变）
+@property (nonatomic, assign) NSUInteger styleSignature;   // 样式记忆（参数未变跳过重刷）
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *fishFlip;   // 每条鱼的朝向缓存
+@property (nonatomic, assign) float lastGradientAlpha;     // 渐变透明度缓存（避免重复写）
+@property (nonatomic, assign) double chargeNext; // 充电火花倒计时
+@property (nonatomic, strong) CAEmitterLayer *burst;       // 到达粒子爆发
+@property (nonatomic, strong) CAEmitterLayer *season;      // 季节粒子
+@property (nonatomic, strong) UIColor *iconColor;          // 应用图标取色（缓存）
+@property (nonatomic, assign) NSInteger lastParticleKey;   // 粒子样式缓存（-1 = 回退态）
+@property (nonatomic, assign) CFTimeInterval lastLoadAttempt;  // 图片加载重试时间戳
+@property (nonatomic, assign) BOOL burstPlayed;
+@end
+@implementation AxsGlassifyNotifyEffect
+@end
+
+// emoji 渲染成图片（粒子 sprite）。
+static UIImage *axs_glassify_notify_emojiImage(NSString *emoji, CGFloat size) {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0);
+    NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];
+    style.alignment = NSTextAlignmentCenter;
+    [emoji drawInRect:CGRectMake(0, size * 0.05, size, size * 0.9)
+       withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size * 0.8],
+                        NSParagraphStyleAttributeName: style}];
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+
+// 透明彩色玻璃鱼（半透明渐变身体 + 亮边描线 + 内高光 + 条纹）。
+static UIImage *axs_glassify_notify_fishImage(UIColor *base, CGFloat size) {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGFloat w = size, h = size;
+
+    CGFloat r = 0, g = 0, b = 0, a = 1;
+    [base getRed:&r green:&g blue:&b alpha:&a];
+    CGFloat topR = (CGFloat)fmin(1.0, r * 1.3 + 0.15);
+    CGFloat topG = (CGFloat)fmin(1.0, g * 1.3 + 0.15);
+    CGFloat topB = (CGFloat)fmin(1.0, b * 1.3 + 0.15);
+
+    // 尾鳍（半透明扇形 + 亮边）。
+    UIBezierPath *tail = [UIBezierPath bezierPath];
+    [tail moveToPoint:CGPointMake(w * 0.66, h * 0.5)];
+    [tail addQuadCurveToPoint:CGPointMake(w * 0.97, h * 0.16)
+                 controlPoint:CGPointMake(w * 0.92, h * 0.34)];
+    [tail addLineToPoint:CGPointMake(w * 0.97, h * 0.84)];
+    [tail addQuadCurveToPoint:CGPointMake(w * 0.66, h * 0.5)
+                 controlPoint:CGPointMake(w * 0.92, h * 0.66)];
+    [tail closePath];
+    [[base colorWithAlphaComponent:0.38] setFill];
+    [tail fill];
+    [[base colorWithAlphaComponent:0.75] setStroke];
+    tail.lineWidth = w * 0.022;
+    [tail stroke];
+
+    // 身体（水滴形，半透明渐变：上亮下深）。
+    UIBezierPath *body = [UIBezierPath bezierPath];
+    [body moveToPoint:CGPointMake(w * 0.05, h * 0.5)];
+    [body addQuadCurveToPoint:CGPointMake(w * 0.70, h * 0.18)
+                 controlPoint:CGPointMake(w * 0.34, h * 0.10)];
+    [body addQuadCurveToPoint:CGPointMake(w * 0.70, h * 0.82)
+                 controlPoint:CGPointMake(w * 0.92, h * 0.5)];
+    [body addQuadCurveToPoint:CGPointMake(w * 0.05, h * 0.5)
+                 controlPoint:CGPointMake(w * 0.34, h * 0.90)];
+    [body closePath];
+    CGFloat comps[] = {topR, topG, topB, 0.82f, (CGFloat)(r * 0.85), (CGFloat)(g * 0.85), (CGFloat)(b * 0.85), 0.38f};
+    CGFloat locs[] = {0, 1};
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 2);
+    CGContextSaveGState(ctx);
+    [body addClip];
+    CGContextDrawLinearGradient(ctx, grad, CGPointMake(0, h * 0.12), CGPointMake(0, h * 0.88), 0);
+    CGContextRestoreGState(ctx);
+    CGGradientRelease(grad);
+    CGColorSpaceRelease(space);
+    // 亮边描线（玻璃轮廓）。
+    [[base colorWithAlphaComponent:0.95] setStroke];
+    body.lineWidth = w * 0.028;
+    [body stroke];
+
+    // 背鳍（半透明）。
+    UIBezierPath *fin = [UIBezierPath bezierPath];
+    [fin moveToPoint:CGPointMake(w * 0.40, h * 0.22)];
+    [fin addQuadCurveToPoint:CGPointMake(w * 0.60, h * 0.16)
+                 controlPoint:CGPointMake(w * 0.54, h * 0.02)];
+    [fin addQuadCurveToPoint:CGPointMake(w * 0.50, h * 0.26)
+                 controlPoint:CGPointMake(w * 0.58, h * 0.20)];
+    [fin closePath];
+    [[base colorWithAlphaComponent:0.45] setFill];
+    [fin fill];
+    [[base colorWithAlphaComponent:0.8] setStroke];
+    fin.lineWidth = w * 0.018;
+    [fin stroke];
+
+    // 内高光（玻璃质感：上部白色柔光）。
+    UIBezierPath *glint = [UIBezierPath bezierPathWithOvalInRect:
+        CGRectMake(w * 0.18, h * 0.22, w * 0.34, h * 0.16)];
+    [[UIColor colorWithWhite:1 alpha:0.35] setFill];
+    [glint fill];
+
+    // 条纹（浅弧）。
+    [[UIColor colorWithWhite:1 alpha:0.30] setStroke];
+    for (int s = 0; s < 2; s++) {
+        UIBezierPath *stripe = [UIBezierPath bezierPath];
+        CGFloat sx = w * (0.42 + 0.16 * s);
+        [stripe moveToPoint:CGPointMake(sx, h * 0.26)];
+        [stripe addQuadCurveToPoint:CGPointMake(sx, h * 0.74)
+                      controlPoint:CGPointMake(sx + w * 0.12, h * 0.5)];
+        stripe.lineWidth = w * 0.04;
+        stripe.lineCapStyle = kCGLineCapRound;
+        [stripe stroke];
+    }
+
+    // 眼睛（白 + 瞳孔 + 高光）。
+    CGRect eyeRect = CGRectMake(w * 0.20, h * 0.38, w * 0.17, h * 0.17);
+    [[UIColor colorWithWhite:1 alpha:0.92] setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:eyeRect] fill];
+    [[UIColor colorWithWhite:0.08 alpha:1] setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:CGRectInset(eyeRect, w * 0.042, h * 0.042)] fill];
+    [[UIColor whiteColor] setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:
+      CGRectMake(eyeRect.origin.x + w * 0.05, eyeRect.origin.y + h * 0.05, w * 0.04, h * 0.04)] fill];
+
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+
+// UIImage 平均色（壁纸/图标取色用）。
+@interface UIImage (AxsGlassifyNotifyAverage)
+- (UIColor *)axs_glassify_notify_averageColor;
+@end
+@implementation UIImage (AxsGlassifyNotifyAverage)
+- (UIColor *)axs_glassify_notify_averageColor {
+    CGImageRef cg = self.CGImage;
+    if (!cg) return nil;
+    size_t w = 16, h = 16;
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    uint8_t *buf = (uint8_t *)calloc(w * h * 4, 1);
+    if (!buf) { CGColorSpaceRelease(space); return nil; }
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, w * 4, space,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    if (!ctx) { free(buf); CGColorSpaceRelease(space); return nil; }
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cg);
+    double r = 0, g = 0, b = 0;
+    for (size_t i = 0; i < w * h; i++) { r += buf[i*4]; g += buf[i*4+1]; b += buf[i*4+2]; }
+    size_t n = w * h;
+    UIColor *color = [UIColor colorWithRed:r/n/255.0 green:g/n/255.0 blue:b/n/255.0 alpha:1.0];
+    CGContextRelease(ctx); CGColorSpaceRelease(space); free(buf);
+    return color;
+}
+@end
+
+// 壁纸主色（缓存 5 秒，避免逐帧解码）。
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static UIColor *axs_glassify_notify_wallpaperColor(void) {
+    static UIColor *cached = nil;
+    static CFTimeInterval cachedAt = -100.0;
+    CFTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (cached && now - cachedAt < 5.0) return cached;
+    cachedAt = now;
+    if (@available(iOS 13.0, *)) {
+        Class cls = NSClassFromString(@"SBFWallpaperView");
+        if (!cls) return cached;
+        SEL sharedSel = NSSelectorFromString(@"sharedInstance");
+        if (![cls respondsToSelector:sharedSel]) return cached;
+        id view = [cls performSelector:sharedSel];
+        if (!view) return cached;
+        SEL imgSel = NSSelectorFromString(@"currentWallpaperImage");
+        if (![view respondsToSelector:imgSel]) return cached;
+        UIImage *img = [view performSelector:imgSel];
+        if (![img isKindOfClass:[UIImage class]]) return cached;
+        cached = [img axs_glassify_notify_averageColor];
+        return cached;
+    }
+    return cached;
+}
+#pragma clang diagnostic pop
+
+// 找通知里的应用图标（正方形小 UIImageView）。
+static UIImageView *axs_glassify_notify_findIconView(UIView *view, int depth) {
+    if (depth > 6) return nil;
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UIImageView class]]) {
+            UIImageView *iv = (UIImageView *)sub;
+            CGFloat w = iv.bounds.size.width;
+            if (iv.image && w > 8 && w < 80 && fabs(w - iv.bounds.size.height) < 4) {
+                return iv;
+            }
+        }
+        UIImageView *deep = axs_glassify_notify_findIconView(sub, depth + 1);
+        if (deep) return deep;
+    }
+    return nil;
+}
+
+// 找通知的背景视图（毛玻璃/材质层）。圆角打在它身上而不是通知层，
+// 避免 masksToBounds 裁掉粒子（粒子要飘出通知边界）。
+static UIView *axs_glassify_notify_findBackgroundView(UIView *view, int depth) {
+    if (depth > 5) return nil;
+    for (UIView *sub in view.subviews) {
+        if (sub.bounds.size.width < 10) continue;
+        // 玻璃底板是合并后新增的背景层，圆角归 AxsGlassifyLiquid 管；
+        // 这里跳过它，继续找卡片真正的材质层。
+        if ([AxsGlassifyLiquid axs_glassify_isGlassView:sub]) continue;
+        NSString *cls = NSStringFromClass([sub class]);
+        if ([sub isKindOfClass:[UIVisualEffectView class]]
+            || [cls containsString:@"WallpaperEffect"] || [cls containsString:@"Material"]
+            || [cls containsString:@"Backdrop"] || [cls containsString:@"Background"]) {
+            return sub;
+        }
+        UIView *deep = axs_glassify_notify_findBackgroundView(sub, depth + 1);
+        if (deep) return deep;
+    }
+    return nil;
+}
+
+// 找通知标题（字体最大的 UILabel）。
+static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
+    if (depth > 6) return nil;
+    UILabel *best = nil;
+    CGFloat bestSize = 0;
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UILabel class]]) {
+            UILabel *lb = (UILabel *)sub;
+            CGFloat fs = lb.font.pointSize;
+            if (fs > bestSize && lb.text.length > 0) {
+                best = lb;
+                bestSize = fs;
+            }
+        }
+        UILabel *deep = axs_glassify_notify_findTitleLabel(sub, depth + 1);
+        if (deep && deep.font.pointSize > bestSize && deep.text.length > 0) {
+            best = deep;
+            bestSize = deep.font.pointSize;
+        }
+    }
+    return best;
+}
+
+@interface AxsGlassifyNotifyAnimator ()
+@property (nonatomic, strong) NSMutableArray<AxsGlassifyNotifyEffect *> *effects;
+@property (nonatomic, strong) CADisplayLink *link;
+@property (nonatomic, assign) CFTimeInterval phase;
+@property (nonatomic, assign) NSUInteger frameCounter;   // 帧计数（降频更新用）
+@property (nonatomic, strong) id prefsObserver;          // 配置变更→重启 tick
+@end
+
+@implementation AxsGlassifyNotifyAnimator
+
++ (instancetype)axs_glassify_notify_shared {
+    static AxsGlassifyNotifyAnimator *instance;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[self alloc] init];
+    });
+    return instance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _effects = [NSMutableArray array];
+        // 充电特效需要电池状态。
+        [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+        // 空闲停表后，配置变更时重新拉起 tick（弱引用防循环）。
+        __weak AxsGlassifyNotifyAnimator *weakSelf = self;
+        _prefsObserver = [[NSNotificationCenter defaultCenter]
+            addObserverForName:AxsGlassifyPreferencesChanged
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) {
+            (void)note;
+            AxsGlassifyNotifyAnimator *strongSelf = weakSelf;
+            if (strongSelf && strongSelf.effects.count > 0) {
+                [strongSelf axs_glassify_notify_ensureLink];
+            }
+        }];
+    }
+    return self;
+}
+
+#pragma mark - 挂载 / 卸载
+
+- (void)axs_glassify_notify_attachToView:(UIView *)view {
+    if (!view) return;
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    if (![config axs_glassify_notify_isEnabled]) return;
+    // 清除残留的消散动画（滚动复用会带着"隐形"fillMode 回来，导致通知消失）。
+    [view.layer removeAnimationForKey:@"axs_liquid_dissolve"];
+    // 入场/爆发每个视图实例只播一次（滚动复用不重播）。
+    BOOL seen = [objc_getAssociatedObject(view, kAxsLiquidSeenKey) boolValue];
+    objc_setAssociatedObject(view, kAxsLiquidSeenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (e.view == view) {
+            [self axs_glassify_notify_refreshForView:view];
+            return;
+        }
+    }
+
+    AxsGlassifyNotifyEffect *effect = [[AxsGlassifyNotifyEffect alloc] init];
+    effect.view = view;
+    CGFloat radius = view.layer.cornerRadius > 0 ? view.layer.cornerRadius : 24.0;
+
+    // 流动渐变背景（三段渐变横向流动，zPosition 10 浮在通知毛玻璃背景之上）。
+    CAGradientLayer *gradient = [CAGradientLayer layer];
+    gradient.frame = view.bounds;
+    gradient.cornerRadius = radius;
+    gradient.startPoint = CGPointMake(0, 0.5);
+    gradient.endPoint = CGPointMake(1, 0.5);
+    gradient.opacity = 0;
+    gradient.zPosition = 10;
+    [view.layer addSublayer:gradient];
+    effect.gradient = gradient;
+
+    // 鱼缸游鱼：自定义图片优先（多张 ; 分隔轮流），否则手绘 5 色小鱼。
+    effect.fishLayers = [NSMutableArray array];
+    effect.fishNextBubble = [NSMutableArray array];
+    effect.fishFlip = [NSMutableArray array];
+    effect.fishSeed = (double)arc4random_uniform(10000) / 100.0;   // 随机相位：各通知鱼游互不同步
+    effect.particleJitter = 0.85 + ((double)arc4random() / UINT32_MAX) * 0.5;   // 发射率抖动 ±25%
+    effect.chargeNext = 1.0;
+    // 加载自定义鱼图（最多 6 张）。
+    NSMutableArray<UIImage *> *customFish = [NSMutableArray array];
+    for (NSString *raw in [[config axs_glassify_notify_fishPng] componentsSeparatedByString:@";"]) {
+        NSString *p = [raw stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (p.length == 0) continue;
+        UIImage *img = [UIImage imageWithContentsOfFile:p];
+        if (img) [customFish addObject:img];
+        if (customFish.count >= 6) break;
+    }
+    NSArray<UIColor *> *palette = @[
+        [UIColor colorWithRed:1.00 green:0.62 blue:0.21 alpha:1],   // 金橙
+        [UIColor colorWithRed:0.25 green:0.72 blue:0.85 alpha:1],   // 青蓝
+        [UIColor colorWithRed:1.00 green:0.45 blue:0.62 alpha:1],   // 粉
+        [UIColor colorWithRed:0.66 green:0.42 blue:0.90 alpha:1],   // 紫
+        [UIColor colorWithRed:0.36 green:0.82 blue:0.50 alpha:1],   // 绿
+    ];
+    for (NSInteger i = 0; i < 8; i++) {
+        CALayer *fish = [CALayer layer];
+        fish.opacity = 0;
+        fish.zPosition = 6;   // 背景之上、渐变之下
+        [view.layer addSublayer:fish];
+        [effect.fishLayers addObject:fish];
+        // 自定义图优先，否则手绘小鱼；sprite 高分辨率渲染，显示大小由 bounds + fish_size 控制。
+        UIImage *img = customFish.count > 0
+            ? customFish[(NSUInteger)i % customFish.count]
+            : axs_glassify_notify_fishImage(palette[(NSUInteger)i % palette.count], 64.0);
+        fish.contents = (__bridge id)img.CGImage;
+        [effect.fishNextBubble addObject:@(1.0 + (i % 5) * 0.6 + ((double)arc4random() / UINT32_MAX) * 1.5)];
+        [effect.fishFlip addObject:@NO];
+    }
+
+    // 应用图标取色（按 App 专属渐变色，attach 采样一次）。
+    UIImageView *iconView = axs_glassify_notify_findIconView(view, 0);
+    effect.iconColor = iconView.image ? [iconView.image axs_glassify_notify_averageColor] : nil;
+    effect.iconView = iconView;
+    effect.titleLabel = axs_glassify_notify_findTitleLabel(view, 0);
+
+    // 到达粒子爆发层（新通知瞬间光斑飞溅）。
+    CAEmitterLayer *burst = [CAEmitterLayer layer];
+    burst.frame = view.bounds;
+    burst.emitterPosition = CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds));
+    burst.emitterSize = CGSizeMake(6, 6);
+    burst.emitterShape = kCAEmitterLayerRectangle;
+    burst.renderMode = kCAEmitterLayerAdditive;
+    burst.opacity = 0;
+    // 爆发 sprite：从文件导入（burst_png），找不到回退白色光点。
+    UIImage *burstSprite = nil;
+    NSString *burstPath = [config axs_glassify_notify_burstPng];
+    if (burstPath.length > 0) {
+        burstSprite = [UIImage imageWithContentsOfFile:burstPath];
+    }
+    if (!burstSprite) {
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(12, 12), NO, 0);
+        CGContextRef bctx = UIGraphicsGetCurrentContext();
+        CGContextSetFillColorWithColor(bctx, [UIColor whiteColor].CGColor);
+        CGContextFillEllipseInRect(bctx, CGRectMake(3, 3, 6, 6));
+        burstSprite = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    }
+    CAEmitterCell *bCell = [CAEmitterCell emitterCell];
+    bCell.contents = (__bridge id)burstSprite.CGImage;
+    bCell.birthRate = 26.0;
+    bCell.lifetime = 1.0;
+    bCell.velocity = 110.0;
+    bCell.velocityRange = 55.0;
+    bCell.emissionRange = M_PI * 2;
+    bCell.scale = burstPath.length > 0 ? 0.55f : 0.35f;
+    bCell.scaleRange = 0.2;
+    bCell.alphaSpeed = -1.2;
+    burst.emitterCells = @[bCell];
+    [view.layer addSublayer:burst];
+    effect.burst = burst;
+    effect.burstPlayed = NO;
+
+    // 季节粒子层（飘落 emoji）。
+    CAEmitterLayer *season = [CAEmitterLayer layer];
+    season.frame = view.bounds;
+    season.emitterPosition = CGPointMake(CGRectGetMidX(view.bounds), -6.0);
+    season.emitterSize = CGSizeMake(view.bounds.size.width, 3.0);
+    season.emitterShape = kCAEmitterLayerLine;
+    season.renderMode = kCAEmitterLayerUnordered;
+    season.opacity = 0;
+    [view.layer addSublayer:season];
+    effect.season = season;
+    effect.lastParticleKey = -1;
+
+    [self.effects addObject:effect];
+
+    // 出现动画（五档）：果冻弹跳 / 除雾渐显 / 挤压拉伸 / 凝胶膨胀。仅首次挂载播放。
+    NSInteger appearMode = [config axs_glassify_notify_appearMode];
+    if (appearMode > 0 && !seen) {
+        double intensity = [config axs_glassify_notify_appearIntensity];
+        double s = [config axs_glassify_notify_notifyScale];
+        CAAnimationGroup *group = [CAAnimationGroup animation];
+        group.removedOnCompletion = YES;
+        if (appearMode == 1) {
+            // 果冻弹跳（jelly pop）。
+            CAKeyframeAnimation *pop = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+            pop.values = @[@(s * (1.0 - 0.25 * intensity)),
+                           @(s * (1.0 + 0.08 * intensity)),
+                           @(s * (1.0 - 0.03 * intensity)),
+                           @(s)];
+            pop.keyTimes = @[@0, @0.45, @0.75, @1.0];
+            group.animations = @[pop];
+            group.duration = 0.55;
+        } else if (appearMode == 2) {
+            // 除雾渐显（progressive defogging）：半透明雾感 → 清晰。
+            CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            fade.fromValue = @0.15;
+            fade.toValue = @1.0;
+            CABasicAnimation *settle = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
+            settle.fromValue = @(s * 1.07);
+            settle.toValue = @(s);
+            group.animations = @[fade, settle];
+            group.duration = 0.65;
+        } else if (appearMode == 3) {
+            // 挤压拉伸（squeeze & stretch）：X/Y 反相形变。
+            CAKeyframeAnimation *sx = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale.x"];
+            sx.values = @[@(s), @(s * (1.0 + 0.20 * intensity)),
+                          @(s * (1.0 - 0.12 * intensity)), @(s * (1.0 + 0.05 * intensity)), @(s)];
+            sx.keyTimes = @[@0, @0.25, @0.55, @0.8, @1.0];
+            CAKeyframeAnimation *sy = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale.y"];
+            sy.values = @[@(s), @(s * (1.0 - 0.18 * intensity)),
+                          @(s * (1.0 + 0.12 * intensity)), @(s * (1.0 - 0.04 * intensity)), @(s)];
+            sy.keyTimes = @[@0, @0.25, @0.55, @0.8, @1.0];
+            group.animations = @[sx, sy];
+            group.duration = 0.6;
+        } else {
+            // 凝胶膨胀（gel swell）：从压缩胶囊膨胀回弹。
+            CAKeyframeAnimation *pop = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+            pop.values = @[@(s * (1.0 - 0.30 * intensity)),
+                           @(s * (1.0 + 0.12 * intensity)),
+                           @(s * (1.0 - 0.04 * intensity)),
+                           @(s)];
+            pop.keyTimes = @[@0, @0.5, @0.78, @1.0];
+            group.animations = @[pop];
+            group.duration = 0.5;
+        }
+        group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+        [view.layer addAnimation:group forKey:@"axs_liquid_appear"];
+    }
+
+    [self axs_glassify_notify_refreshForView:view];
+    [self axs_glassify_notify_ensureLink];
+
+    // 到达粒子爆发：一次性播放（仅首次挂载）。延迟 0.1s 等布局完成，按实际 bounds 中心发射。
+    if ([config axs_glassify_notify_burstOn] && !effect.burstPlayed && !seen) {
+        effect.burstPlayed = YES;
+        double bi = [config axs_glassify_notify_burstIntensity];
+        __weak AxsGlassifyNotifyEffect *we = effect;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            AxsGlassifyNotifyEffect *e = we;
+            UIView *ev = e.view;
+            if (!e || !ev || !e.burst) return;
+            e.burst.frame = ev.bounds;
+            e.burst.emitterPosition = CGPointMake(CGRectGetMidX(ev.bounds), CGRectGetMidY(ev.bounds));
+            e.burst.emitterSize = CGSizeMake(MAX(6.0, ev.bounds.size.width * 0.3),
+                                             MAX(6.0, ev.bounds.size.height * 0.3));
+            e.burst.opacity = 1.0f;
+            CAEmitterCell *bc = e.burst.emitterCells.firstObject;
+            if (bc) {
+                bc.birthRate = (float)(26.0 * bi);
+                bc.scale = (float)(0.35 * (0.7 + 0.3 * bi));
+                UIColor *source = e.iconColor ?: [UIColor colorWithHue:0.6 saturation:0.7 brightness:1 alpha:1];
+                bc.color = source.CGColor;
+            }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                AxsGlassifyNotifyEffect *e2 = we;
+                if (e2 && e2.burst) e2.burst.birthRate = 0;
+            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                AxsGlassifyNotifyEffect *e2 = we;
+                if (e2 && e2.burst) e2.burst.opacity = 0;
+            });
+        });
+    }
+}
+
+- (void)axs_glassify_notify_detachView:(UIView *)view {
+    for (NSInteger i = (NSInteger)self.effects.count - 1; i >= 0; i--) {
+        AxsGlassifyNotifyEffect *e = self.effects[(NSUInteger)i];
+        if (e.view == view || e.view == nil) {
+            [e.gradient removeFromSuperlayer];
+            for (CALayer *f in e.fishLayers) [f removeFromSuperlayer];
+            [e.burst removeFromSuperlayer];
+            [e.season removeFromSuperlayer];
+            [e.iconGlow removeFromSuperlayer];
+            [self.effects removeObjectAtIndex:(NSUInteger)i];
+        }
+    }
+    if (self.effects.count == 0) [self axs_glassify_notify_stopLink];
+}
+
+// 样式签名：样式参数与尺寸未变时，refresh 整段跳过（滚动时 layoutSubviews 高频触发）。
+static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *config, UIView *v) {
+    NSUInteger sig = (NSUInteger)(v.bounds.size.width) * 1000 + (NSUInteger)(v.bounds.size.height);
+    double vals[] = {
+        [config axs_glassify_notify_notifyScale],
+        [config axs_glassify_notify_titleHue],
+        [config axs_glassify_notify_titleGlow],
+        [config axs_glassify_notify_iconCorner],
+        [config axs_glassify_notify_iconScale],
+        [config axs_glassify_notify_iconGlow],
+        [config axs_glassify_notify_cornerRadius],
+        [config axs_glassify_notify_notifyOpacity],
+        [config axs_glassify_notify_shadowIntensity],
+        [config axs_glassify_notify_tiltIntensity],
+        [config axs_glassify_notify_notifyWidth],
+    };
+    for (size_t i = 0; i < sizeof(vals) / sizeof(vals[0]); i++) {
+        sig = sig * 31 + (NSUInteger)(long)(vals[i] * 500.0);
+    }
+    sig = sig * 31 + ([config axs_glassify_notify_titleColorOn] ? 1u : 0u);
+    if (v.superview) {
+        sig = sig * 31 + (NSUInteger)(v.superview.bounds.size.width);
+    }
+    return sig;
+}
+
+- (void)axs_glassify_notify_refreshForView:(UIView *)view {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    if (![config axs_glassify_notify_isEnabled]) return;
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (e.view != view) continue;
+        UIView *v = e.view;
+        if (!v) return;
+        // 样式签名记忆：参数/尺寸没变就不碰任何属性。
+        NSUInteger sig = axs_glassify_notify_styleSignature(config, v);
+        if (sig == e.styleSignature) return;
+        e.styleSignature = sig;
+
+        // ── 布局光影：宽度 / 圆角 / 透明度 / 投影 ──
+        double wFrac = [config axs_glassify_notify_notifyWidth];
+        if (wFrac < 0.999 && v.superview) {
+            CGFloat targetW = v.superview.bounds.size.width * (CGFloat)wFrac;
+            CGRect f = v.frame;
+            if (targetW > 1 && fabs(f.size.width - targetW) > 1) {
+                f.size.width = targetW;
+                f.origin.x = (v.superview.bounds.size.width - targetW) / 2.0;
+                v.frame = f;
+            }
+        }
+        double cr = [config axs_glassify_notify_cornerRadius];
+        if (cr > 0) {
+            // 圆角打在背景视图上（只裁背景的角）；通知层不设 masksToBounds，
+            // 否则粒子/火花/泡泡全被裁在通知内飘不出去。
+            UIView *bg = axs_glassify_notify_findBackgroundView(v, 0);
+            if (bg) {
+                bg.layer.cornerRadius = (CGFloat)cr;
+                bg.layer.masksToBounds = YES;
+            } else {
+                v.layer.cornerRadius = (CGFloat)cr;   // 无背景层时仅设圆角（不裁剪）
+            }
+        }
+        double op = [config axs_glassify_notify_notifyOpacity];
+        if (op < 0.999) {
+            v.layer.opacity = (float)op;
+        }
+        double sh = [config axs_glassify_notify_shadowIntensity];
+        if (sh > 0) {
+            v.layer.shadowColor = [UIColor blackColor].CGColor;
+            v.layer.shadowRadius = (CGFloat)(4.0 + 10.0 * sh);
+            v.layer.shadowOpacity = (float)(0.4 * sh);
+            v.layer.shadowOffset = CGSizeMake(0, 6);
+        } else if (v.layer.shadowOpacity != 0) {
+            v.layer.shadowOpacity = 0;
+        }
+
+        // ── 通知缩放 + 3D 倾斜（transform 归我们，frame 归系统） ──
+        double s = [config axs_glassify_notify_notifyScale];
+        double tilt = [config axs_glassify_notify_tiltIntensity];
+        CATransform3D t = CATransform3DIdentity;
+        if (tilt > 0) {
+            t.m34 = -1.0f / 500.0f;
+            t = CATransform3DRotate(t, (CGFloat)(0.10 * tilt), 1, 0, 0);
+        }
+        v.layer.transform = CATransform3DScale(t, s, s, 1.0);
+
+        // ── 效果层帧同步 ──
+        e.gradient.frame = v.bounds;
+        e.gradient.cornerRadius = cr > 0 ? (CGFloat)cr
+            : (v.layer.cornerRadius > 0 ? v.layer.cornerRadius : 24.0);
+        e.burst.frame = v.bounds;
+        e.burst.emitterPosition = CGPointMake(CGRectGetMidX(v.bounds), CGRectGetMidY(v.bounds));
+
+        // ── 标题：颜色 + 发光 ──
+        UILabel *title = e.titleLabel;
+        if (title) {
+            if ([config axs_glassify_notify_titleColorOn]) {
+                title.textColor = [UIColor colorWithHue:(CGFloat)[config axs_glassify_notify_titleHue]
+                                             saturation:0.75 brightness:1 alpha:1];
+            }
+            double glow = [config axs_glassify_notify_titleGlow];
+            if (glow > 0) {
+                title.layer.shadowColor = [config axs_glassify_notify_titleColorOn]
+                    ? title.textColor.CGColor
+                    : [UIColor whiteColor].CGColor;
+                title.layer.shadowRadius = (CGFloat)(3.0 + 6.0 * glow);
+                title.layer.shadowOpacity = (float)(0.6 * glow);
+                title.layer.shadowOffset = CGSizeZero;
+            } else if (title.layer.shadowOpacity != 0) {
+                title.layer.shadowOpacity = 0;
+            }
+        }
+
+        // ── 图标：圆角 / 大小 / 发光（光晕用背后渐变层，避免与圆角裁剪冲突） ──
+        UIImageView *iv = e.iconView;
+        if (iv) {
+            double ic = [config axs_glassify_notify_iconCorner];
+            if (ic > 0) {
+                iv.layer.cornerRadius = (CGFloat)ic;
+                iv.layer.masksToBounds = YES;
+            }
+            double isc = [config axs_glassify_notify_iconScale];
+            iv.layer.transform = CATransform3DMakeScale((CGFloat)isc, (CGFloat)isc, 1.0);
+            double ig = [config axs_glassify_notify_iconGlow];
+            if (ig > 0 && iv.superview) {
+                if (!e.iconGlow) {
+                    CAGradientLayer *glowL = [CAGradientLayer layer];
+                    glowL.type = kCAGradientLayerRadial;
+                    glowL.startPoint = CGPointMake(0.5, 0.5);
+                    glowL.endPoint = CGPointMake(1.0, 1.0);
+                    glowL.zPosition = -1;   // 图标之下
+                    [iv.superview.layer insertSublayer:glowL atIndex:0];
+                    e.iconGlow = glowL;
+                }
+                CGRect gf = CGRectInset(iv.frame, -10, -10);
+                e.iconGlow.frame = gf;
+                UIColor *gc = e.iconColor ?: [UIColor whiteColor];
+                e.iconGlow.colors = @[(id)[gc colorWithAlphaComponent:(CGFloat)(0.55 * ig)].CGColor,
+                                      (id)[UIColor clearColor].CGColor];
+                e.iconGlow.locations = @[@0, @1];
+            } else if (e.iconGlow) {
+                e.iconGlow.opacity = 0;
+            }
+        }
+        return;
+    }
+}
+
+#pragma mark - 触摸发光（touch glow）：渐变闪亮 + 微挤压
+
+- (void)axs_glassify_notify_touchGlowForView:(UIView *)view {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    if (![config axs_glassify_notify_isEnabled] || ![config axs_glassify_notify_touchGlowOn]) return;
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (e.view != view) continue;
+        // 渐变闪亮：透明度瞬间拉高再落回。
+        float base = e.gradient.opacity;
+        CAKeyframeAnimation *glow = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+        glow.values = @[@(base), @(fmin(1.0f, base + 0.5f)), @(base)];
+        glow.keyTimes = @[@0, @0.3, @1.0];
+        glow.duration = 0.45;
+        [e.gradient addAnimation:glow forKey:@"axs_touch_glow"];
+        // 微挤压（果冻手感）。
+        double s = [config axs_glassify_notify_notifyScale];
+        CAKeyframeAnimation *squeeze = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+        squeeze.values = @[@(s), @(s * 0.95), @(s * 1.02), @(s)];
+        squeeze.keyTimes = @[@0, @0.3, @0.7, @1.0];
+        squeeze.duration = 0.35;
+        [view.layer addAnimation:squeeze forKey:@"axs_touch_squeeze"];
+        return;
+    }
+}
+
+#pragma mark - 滑动拖尾（拖动通知时渐变跟手，松手回位）
+
+- (void)axs_glassify_notify_dragGradientForView:(UIView *)view translationY:(CGFloat)dy {
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (e.view != view) continue;
+        CGFloat clamped = (CGFloat)fmax(-60.0, fmin(60.0, dy * 0.35));
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        e.gradient.position = CGPointMake(CGRectGetMidX(view.bounds),
+                                          CGRectGetMidY(view.bounds) + clamped);
+        [CATransaction commit];
+        return;
+    }
+}
+
+- (void)axs_glassify_notify_endDragForView:(UIView *)view {
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (e.view != view) continue;
+        // 弹回中心（带缓动）。
+        CABasicAnimation *back = [CABasicAnimation animationWithKeyPath:@"position"];
+        back.fromValue = [NSValue valueWithCGPoint:e.gradient.position];
+        back.toValue = [NSValue valueWithCGPoint:
+            CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds))];
+        back.duration = 0.35;
+        back.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+        [e.gradient addAnimation:back forKey:@"axs_drag_back"];
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        e.gradient.position = CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds));
+        [CATransaction commit];
+        return;
+    }
+}
+
+#pragma mark - 消失消散（划走/清除时液态溶解）
+
+- (void)axs_glassify_notify_dissolveForView:(UIView *)view {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    if (![config axs_glassify_notify_isEnabled] || ![config axs_glassify_notify_dissolveOn]) return;
+    // 延迟 0.15s：滚动复用的 Cell 通常很快回到窗口（取消淡出）；
+    // 真正被划走/清除的视图此时已离场或正在离场，淡出叠加在系统动画上。
+    __weak UIView *weakView = view;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *v = weakView;
+        if (!v || v.window) return;   // 回到窗口 = 滚动复用，取消消散
+        // 整体淡出 + 轻微收缩。
+        CAAnimationGroup *group = [CAAnimationGroup animation];
+        CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        fade.fromValue = @1.0;
+        fade.toValue = @0.0;
+        CABasicAnimation *shrink = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
+        shrink.fromValue = @1.0;
+        shrink.toValue = @0.88;
+        group.animations = @[fade, shrink];
+        group.duration = 0.25;
+        group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseIn];
+        group.removedOnCompletion = NO;
+        group.fillMode = kCAFillModeForwards;
+        [v.layer addAnimation:group forKey:@"axs_liquid_dissolve"];
+    });
+}
+
+#pragma mark - 动画驱动（30fps，仅有效果时运行）
+
+- (void)axs_glassify_notify_ensureLink {
+    if (self.link) return;
+    self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(axs_glassify_notify_tick:)];
+    // 30fps：慢动画足够流畅，省电降温。
+    self.link.preferredFramesPerSecond = 30;
+    [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)axs_glassify_notify_stopLink {
+    [self.link invalidate];
+    self.link = nil;
+}
+
+- (void)axs_glassify_notify_tick:(CADisplayLink *)link {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    if (![config axs_glassify_notify_isEnabled]) {
+        [self axs_glassify_notify_stopLink];
+        return;
+    }
+    double t = self.phase += link.duration > 0 ? link.duration : 1.0 / 30.0;
+    NSUInteger fc = self.frameCounter++;
+    BOOL slowTick = ((fc % 3) == 0);     // 渐变颜色/位点分配：10Hz（慢动画足够）
+    BOOL paramTick = ((fc % 10) == 0);   // 粒子参数/发射几何：3Hz
+    float dt = (float)(link.duration > 0 ? link.duration : 1.0 / 30.0);
+
+    // ── tick 级配置快照：每帧只查一次配置，循环内零字典查询 ──
+    BOOL gradientOn = [config axs_glassify_notify_gradientOn];
+    BOOL darkDim = [config axs_glassify_notify_darkDim];
+    NSInteger colorSource = [config axs_glassify_notify_colorSource];
+    BOOL fishOn = [config axs_glassify_notify_fishOn];
+    NSInteger fishCount = [config axs_glassify_notify_fishCount];
+    double fishSize = [config axs_glassify_notify_fishSize];
+    double bubbleSize = [config axs_glassify_notify_bubbleSize];
+    double bubbleOpacity = [config axs_glassify_notify_bubbleOpacity];
+    BOOL chargeOn = [config axs_glassify_notify_chargeFx];
+    BOOL particleOn = [config axs_glassify_notify_particleOn];
+    NSInteger pDir = [config axs_glassify_notify_particleDir];
+    double pSize = [config axs_glassify_notify_particleSize];
+    double density = [config axs_glassify_notify_particleDensity];
+    double gSpeed = [config axs_glassify_notify_gradientSpeed];
+    double gOpacity = [config axs_glassify_notify_gradientOpacity];
+    double hue1 = [config axs_glassify_notify_gradientHue1];
+    double hue2 = [config axs_glassify_notify_gradientHue2];
+    double nScale = [config axs_glassify_notify_notifyScale];
+    double tiltI = [config axs_glassify_notify_tiltIntensity];
+    // 低电量保护：降粒子密度、降吐泡频率、关充电特效。
+    BOOL lowPower = [config axs_glassify_notify_lowPowerGuard]
+                    && [NSProcessInfo processInfo].isLowPowerModeEnabled;
+    BOOL charging = NO;
+    if (chargeOn && !lowPower) {
+        UIDeviceBatteryState bs = [UIDevice currentDevice].batteryState;
+        charging = (bs == UIDeviceBatteryStateCharging || bs == UIDeviceBatteryStateFull);
+    }
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+
+    for (NSInteger i = (NSInteger)self.effects.count - 1; i >= 0; i--) {
+        AxsGlassifyNotifyEffect *e = self.effects[(NSUInteger)i];
+        UIView *v = e.view;
+        if (!v) {
+            [e.gradient removeFromSuperlayer];
+            for (CALayer *f in e.fishLayers) [f removeFromSuperlayer];
+            [e.burst removeFromSuperlayer];
+            [e.season removeFromSuperlayer];
+            [e.iconGlow removeFromSuperlayer];
+            [self.effects removeObjectAtIndex:(NSUInteger)i];
+            continue;
+        }
+
+        // 通知缩放 + 3D 倾斜：逐帧重施（系统布局会改写 transform，一次性施加会被覆盖
+        // —— "通知大小失效" 的根因）。每帧一次 layer 写，便宜。
+        {
+            CATransform3D tt = CATransform3DIdentity;
+            if (tiltI > 0) {
+                tt.m34 = -1.0f / 500.0f;
+                tt = CATransform3DRotate(tt, (CGFloat)(0.10 * tiltI), 1, 0, 0);
+            }
+            v.layer.transform = CATransform3DScale(tt, (CGFloat)nScale, (CGFloat)nScale, 1.0);
+        }
+
+        // 流动渐变：配色来源（手动双色 / 应用图标取色 / 壁纸取色）+ 色相漂移 + 位点往复。
+        if (gradientOn) {
+            double dim = 1.0;
+            if (darkDim) {
+                if (@available(iOS 12.0, *)) {
+                    if (v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) dim = 0.72;
+                }
+            }
+            float gAlpha = (float)(gOpacity * dim);
+            if (e.lastGradientAlpha != gAlpha) {
+                e.lastGradientAlpha = gAlpha;
+                e.gradient.opacity = gAlpha;
+            }
+            // 轴向缓慢旋转（便宜，逐帧）。
+            double ang = t * 0.12;
+            e.gradient.startPoint = CGPointMake(0.5 + 0.5 * cos(ang), 0.5 + 0.5 * sin(ang));
+            e.gradient.endPoint = CGPointMake(0.5 - 0.5 * cos(ang), 0.5 - 0.5 * sin(ang));
+            // 颜色/位点需要分配 NSArray/UIColor —— 降到 10Hz（色带推移肉眼仍顺滑）。
+            if (slowTick) {
+                UIColor *c1, *c2, *cm;
+                if (colorSource == 1 && e.iconColor) {
+                    // 应用图标取色：同色系微漂移（每条通知专属色）。
+                    CGFloat h, s, b;
+                    [e.iconColor getHue:&h saturation:&s brightness:&b alpha:nil];
+                    c1 = [UIColor colorWithHue:(CGFloat)fmod(h + 0.05 + t * 0.02, 1.0) saturation:MAX(s, 0.5f) brightness:1 alpha:1];
+                    c2 = [UIColor colorWithHue:(CGFloat)fmod(h - 0.05 + t * 0.02, 1.0) saturation:MAX(s, 0.5f) brightness:1 alpha:1];
+                    cm = [UIColor colorWithHue:(CGFloat)fmod(h + t * 0.02, 1.0) saturation:MAX(s, 0.5f) brightness:1 alpha:1];
+                } else if (colorSource == 2) {
+                    // 壁纸取色：主色 ± 微漂移。
+                    UIColor *wp = axs_glassify_notify_wallpaperColor();
+                    CGFloat h = 0.6f, s = 0.5f;
+                    if (wp) [wp getHue:&h saturation:NULL brightness:NULL alpha:nil];
+                    c1 = [UIColor colorWithHue:(CGFloat)fmod(h + 0.06 + t * 0.02, 1.0) saturation:MAX(s, 0.4f) brightness:1 alpha:1];
+                    c2 = [UIColor colorWithHue:(CGFloat)fmod(h - 0.06 + t * 0.02, 1.0) saturation:MAX(s, 0.4f) brightness:1 alpha:1];
+                    cm = [UIColor colorWithHue:(CGFloat)fmod(h + t * 0.02, 1.0) saturation:MAX(s, 0.4f) brightness:1 alpha:1];
+                } else {
+                    c1 = [UIColor colorWithHue:(CGFloat)fmod(hue1 + t * 0.04, 1.0) saturation:0.75 brightness:1 alpha:1];
+                    c2 = [UIColor colorWithHue:(CGFloat)fmod(hue2 + t * 0.04, 1.0) saturation:0.75 brightness:1 alpha:1];
+                    cm = [UIColor colorWithHue:(CGFloat)fmod((hue1 + hue2) / 2.0 + t * 0.04, 1.0) saturation:0.75 brightness:1 alpha:1];
+                }
+                // 色带波浪推移（每条通知错相，两端固定不卡顿）。
+                double wave = (sin(t * gSpeed * 1.8 + e.fishSeed) + 1.0) / 2.0;
+                double w1 = 0.18 + 0.22 * wave;
+                e.gradient.locations = @[@0, @(w1), @(1.0 - w1), @1];
+                e.gradient.colors = @[(id)c1.CGColor, (id)cm.CGColor, (id)c2.CGColor, (id)cm.CGColor];
+            }
+        } else if (e.gradient.opacity != 0) {
+            e.gradient.opacity = 0;
+            e.lastGradientAlpha = 0;
+        }
+
+        // 鱼缸游鱼：前 fish_count 条可见，正弦游动 + 方向翻转（数量/大小实时生效）。
+        if (fishOn) {
+            double fishCountD = (double)fishCount;
+            for (NSInteger fi = 0; fi < (NSInteger)e.fishLayers.count; fi++) {
+                CALayer *fish = e.fishLayers[(NSUInteger)fi];
+                if (fi >= fishCountD) {
+                    if (fish.opacity != 0) fish.opacity = 0;
+                    continue;
+                }
+                if (fish.opacity != 0.9f) fish.opacity = 0.9f;
+                CGFloat displaySize = (CGFloat)(22.0 * fishSize);
+                if (paramTick) {
+                    fish.bounds = CGRectMake(0, 0, displaySize, displaySize);
+                }
+                double speed = 0.35 + (fi % 4) * 0.09;
+                double phase = (t + e.fishSeed) * speed + fi * 1.3;
+                CGRect b = v.bounds;
+                CGFloat fishX = (CGFloat)(sin(phase) * b.size.width * 0.32) + CGRectGetMidX(b);
+                CGFloat fishY = (CGFloat)(cos(phase * 0.7) * 7.0) + b.size.height * (0.40 + 0.09 * (fi % 3));
+                fish.position = CGPointMake(fishX, fishY);
+                // 方向翻转：只在掉头瞬间写 transform（图头朝左，向右游时镜像）。
+                BOOL flip = cos(phase) > 0;
+                NSNumber *lastFlip = (fi < (NSInteger)e.fishFlip.count) ? e.fishFlip[(NSUInteger)fi] : nil;
+                if (lastFlip.boolValue != flip) {
+                    if (fi < (NSInteger)e.fishFlip.count) e.fishFlip[(NSUInteger)fi] = @(flip);
+                    fish.transform = flip ? CATransform3DMakeScale(-1, 1, 1) : CATransform3DIdentity;
+                }
+
+                // 鱼吐泡泡：倒计时到 0 时从嘴边冒一个泡泡，上浮渐隐后自清。
+                if (fi < (NSInteger)e.fishNextBubble.count) {
+                    double remain = [e.fishNextBubble[(NSUInteger)fi] doubleValue] - (double)dt;
+                    if (remain <= 0) {
+                        remain = (1.4 + ((double)arc4random() / UINT32_MAX) * 1.8) * (lowPower ? 2.0 : 1.0);
+                        CGFloat bs = (CGFloat)((3.5 + fishSize * 2.5) * bubbleSize);
+                        CALayer *bub = [CALayer layer];
+                        bub.bounds = CGRectMake(0, 0, bs, bs);
+                        bub.cornerRadius = bs / 2.0;
+                        bub.borderWidth = 1.1;
+                        bub.borderColor = [UIColor colorWithWhite:1 alpha:(CGFloat)(0.8 * bubbleOpacity)].CGColor;
+                        bub.backgroundColor = [UIColor colorWithWhite:1 alpha:(CGFloat)(0.18 * bubbleOpacity)].CGColor;
+                        CGFloat dir = cos(phase) < 0 ? -1 : 1;
+                        bub.position = CGPointMake(fish.position.x + dir * displaySize * 0.42,
+                                                   fish.position.y - displaySize * 0.12);
+                        bub.zPosition = 7;
+                        [v.layer addSublayer:bub];
+                        CABasicAnimation *rise = [CABasicAnimation animationWithKeyPath:@"position.y"];
+                        rise.fromValue = @(bub.position.y);
+                        rise.toValue = @(bub.position.y - 42);
+                        CABasicAnimation *bfade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+                        bfade.fromValue = @0.9;
+                        bfade.toValue = @0.0;
+                        CAAnimationGroup *bg = [CAAnimationGroup animation];
+                        bg.animations = @[rise, bfade];
+                        bg.duration = 2.2;
+                        bg.removedOnCompletion = YES;
+                        [bub addAnimation:bg forKey:@"axs_bubble_rise"];
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.3 * NSEC_PER_SEC)),
+                                       dispatch_get_main_queue(), ^{
+                            [bub removeFromSuperlayer];
+                        });
+                    }
+                    e.fishNextBubble[(NSUInteger)fi] = @(remain);
+                }
+            }
+        } else {
+            // 关闭时只把鱼隐藏一次（之后 opacity 已为 0，零写入）。
+            for (CALayer *fish in e.fishLayers) {
+                if (fish.opacity != 0) fish.opacity = 0;
+            }
+        }
+
+        // 充电特效：⚡ 金色火花从底部上飘（充电中且未低电量时，快照判定）。
+        if (charging) {
+            e.chargeNext -= (double)dt;
+            if (e.chargeNext <= 0) {
+                e.chargeNext = 1.1 + ((double)arc4random() / UINT32_MAX) * 1.2;
+                static UIImage *sparkSprite = nil;
+                static dispatch_once_t onceToken;
+                dispatch_once(&onceToken, ^{
+                    sparkSprite = axs_glassify_notify_emojiImage(@"⚡", 24.0);
+                });
+                CGFloat ss = 14.0;
+                CALayer *spark = [CALayer layer];
+                spark.bounds = CGRectMake(0, 0, ss, ss);
+                spark.contents = (__bridge id)sparkSprite.CGImage;
+                spark.position = CGPointMake((CGFloat)(((double)arc4random() / UINT32_MAX)
+                                                      * v.bounds.size.width),
+                                             CGRectGetMaxY(v.bounds) - 4.0);
+                spark.zPosition = 7;
+                [v.layer addSublayer:spark];
+                CABasicAnimation *rise = [CABasicAnimation animationWithKeyPath:@"position.y"];
+                rise.fromValue = @(spark.position.y);
+                rise.toValue = @(spark.position.y - 70);
+                CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+                fade.fromValue = @0.95;
+                fade.toValue = @0.0;
+                CAAnimationGroup *g = [CAAnimationGroup animation];
+                g.animations = @[rise, fade];
+                g.duration = 1.9;
+                g.removedOnCompletion = YES;
+                [spark addAnimation:g forKey:@"axs_charge_spark"];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [spark removeFromSuperlayer];
+                });
+            }
+        }
+
+        // 粒子特效（图片文件导入）：几何/参数降到 3Hz 同步（分配与 emitter 写入大头）。
+        if (particleOn) {
+            if (e.season.opacity != 0.85f) e.season.opacity = 0.85f;
+            if (paramTick) {
+                e.season.frame = v.bounds;
+                // 按方向布置发射器几何。
+                CGRect pb = v.bounds;
+                if (pDir == 1) {
+                    e.season.emitterShape = kCAEmitterLayerLine;
+                    e.season.emitterPosition = CGPointMake(CGRectGetMidX(pb), CGRectGetMaxY(pb) + 6.0);
+                    e.season.emitterSize = CGSizeMake(pb.size.width, 3.0);
+                } else if (pDir == 2) {
+                    e.season.emitterShape = kCAEmitterLayerLine;
+                    e.season.emitterPosition = CGPointMake(-6.0, CGRectGetMidY(pb));
+                    e.season.emitterSize = CGSizeMake(3.0, pb.size.height);
+                } else if (pDir == 3) {
+                    e.season.emitterShape = kCAEmitterLayerRectangle;
+                    e.season.emitterPosition = CGPointMake(CGRectGetMidX(pb), CGRectGetMidY(pb));
+                    e.season.emitterSize = CGSizeMake(8.0, 8.0);
+                } else {
+                    e.season.emitterShape = kCAEmitterLayerLine;
+                    e.season.emitterPosition = CGPointMake(CGRectGetMidX(pb), -6.0);
+                    e.season.emitterSize = CGSizeMake(pb.size.width, 3.0);
+                }
+                NSString *paths = [config axs_glassify_notify_particlePng];
+                NSInteger styleKey = 9000 + (NSInteger)((NSUInteger)[paths hash] % 100000);
+                // 路径变了，或上次是回退态（文件可能后放进来）→ 2 秒重试一次。
+                CFTimeInterval now = CFAbsoluteTimeGetCurrent();
+                BOOL needRebuild = (e.lastParticleKey != styleKey);
+                if (!needRebuild && e.lastParticleKey == -1 && now - e.lastLoadAttempt > 2.0) {
+                    needRebuild = YES;
+                }
+                if (needRebuild) {
+                    e.lastLoadAttempt = now;
+                    // 从文件导入图片（最多 6 张，全部加载失败回退 ✨）。
+                    NSMutableArray<UIImage *> *sprites = [NSMutableArray array];
+                    for (NSString *raw in [paths componentsSeparatedByString:@";"]) {
+                        NSString *p = [raw stringByTrimmingCharactersInSet:
+                                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                        if (p.length == 0) continue;
+                        UIImage *img = [UIImage imageWithContentsOfFile:p];
+                        if (img) [sprites addObject:img];
+                        if (sprites.count >= 6) break;
+                    }
+                    if (sprites.count == 0) {
+                        // 回退 ✨ 并标记回退态（lastParticleKey = -1），后续定时重试。
+                        [sprites addObject:axs_glassify_notify_emojiImage(@"✨", 24.0)];
+                        e.lastParticleKey = -1;
+                    } else {
+                        e.lastParticleKey = styleKey;
+                    }
+                    // 每张图一个 cell，混合飘落。
+                    NSMutableArray<CAEmitterCell *> *cells = [NSMutableArray array];
+                    for (UIImage *sp in sprites) {
+                        CAEmitterCell *pCell = [CAEmitterCell emitterCell];
+                        pCell.contents = (__bridge id)sp.CGImage;
+                        // 寿命/速度随机抖动：各通知发射图案不同步。
+                        pCell.lifetime = 4.6f + ((float)arc4random() / UINT32_MAX) * 1.2f;
+                        pCell.velocity = 28.0f + ((float)arc4random() / UINT32_MAX) * 10.0f;
+                        pCell.velocityRange = 14.0f;
+                        pCell.emissionLongitude = M_PI_2;   // 向下飘落
+                        pCell.emissionRange = M_PI / 6.0;
+                        pCell.spin = 0.5f;
+                        pCell.spinRange = 1.2f;
+                        pCell.alphaSpeed = -0.12f;
+                        [cells addObject:pCell];
+                    }
+                    e.season.emitterCells = cells;
+                }
+                // 数量（密度）/ 大小 / 发射角 同步（3Hz 足够，滑块响应延迟 ≤0.33s）。
+                NSArray<CAEmitterCell *> *cells = e.season.emitterCells;
+                float perRate = (float)(3.5 * density * (lowPower ? 0.4 : 1.0) * e.particleJitter
+                                        / (double)MAX((NSUInteger)1, cells.count));
+                double pLongitude = (pDir == 1) ? -M_PI_2 : ((pDir == 2) ? 0.0 : M_PI_2);
+                double pRange = (pDir == 3) ? M_PI * 2 : M_PI / 6.0;   // 多向 = 全方向发散
+                float pVelocity = (pDir == 2) ? 26.0f : ((pDir == 3) ? 36.0f : 32.0f);
+                for (CAEmitterCell *pc in cells) {
+                    pc.birthRate = perRate;
+                    pc.scale = (float)(0.5 * pSize);
+                    pc.scaleRange = (float)(0.2 * pSize);
+                    pc.emissionLongitude = pLongitude;
+                    pc.emissionRange = pRange;
+                    pc.velocity = (float)(pVelocity * e.particleJitter);   // 各通知速度不同步
+                }
+            }
+        } else if (e.season.opacity != 0) {
+            e.season.opacity = 0;
+        }
+    }
+
+    [CATransaction commit];
+
+    if (self.effects.count == 0) { [self axs_glassify_notify_stopLink]; return; }
+    // 全关且无缩放/倾斜：停表省电（配置变更通知 / 新通知挂载会自动重启）。
+    // 缩放/倾斜必须保持 tick 存活——系统随时改写 transform，停表就会被覆盖（大小失效根因）。
+    BOOL transformActive = (fabs(nScale - 1.0) > 0.001) || (tiltI > 0.001);
+    if (!gradientOn && !fishOn && !particleOn && !charging && !transformActive) {
+        [self axs_glassify_notify_stopLink];
+        return;
+    }
+    // 自适应帧率：纯慢效（渐变）15fps，鱼/粒子/充电等快效 30fps。
+    NSInteger want = (fishOn || particleOn || charging) ? 30 : 15;
+    if (self.link && self.link.preferredFramesPerSecond != (int)want) {
+        self.link.preferredFramesPerSecond = (int)want;
+    }
+}
+
+- (void)dealloc {
+    if (self.prefsObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self.prefsObserver];
+    }
+    [self axs_glassify_notify_stopLink];
+}
+
+@end

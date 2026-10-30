@@ -6,9 +6,10 @@
   "class_prefix": "AxsGlassify",
   "symbol_prefix": "axs_glassify",
   "package": "com.axs.glassify",
+  "replaces_package": "com.axs.notifyliquid",
   "bundle": "com.apple.springboard",
   "sdk_version": "16.5",
-  "minimum_ios": "14.0",
+  "minimum_ios": "15.0",
   "preferences": true,
   "slider": true,
   "github_actions": true

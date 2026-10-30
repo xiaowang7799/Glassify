@@ -18,6 +18,10 @@
 // call from -layoutSubviews: it is idempotent and ignores non-notification views.
 + (void)axs_glassify_applyToPlatter:(UIView *)platter;
 
+// YES for the panel this class inserted, so the animation engine can skip it when
+// it looks for the platter's own background view.
++ (BOOL)axs_glassify_isGlassView:(UIView *)view;
+
 // Tears the glass background down and restores the views it suppressed.
 + (void)axs_glassify_removeFromPlatter:(UIView *)platter;
 
