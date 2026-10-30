@@ -212,51 +212,6 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
 #pragma mark - Platter handling
 
 + (void)axs_glassify_applyToPlatter:(UIView *)platter {
-    [self axs_glassify_applyToView:platter
-                      minimumWidth:120.0
-                     minimumHeight:30.0
-            useSharedCornerRadius:YES
-                     featureEnabled:axs_glassify_liquid_notificationsEnabled()];
-}
-
-// 控制中心模块面板（CCUIContentModuleBackgroundView）。圆角拿不到时只叠装饰、
-// 不换材质——否则会得到一个方角玻璃块，比不改还难看。
-+ (void)axs_glassify_applyToSurface:(UIView *)surface {
-    if (!surface) {
-        return;
-    }
-    id ccValue = [[AxsGlassifyConfig axs_glassify_shared] axs_glassify_valueForKey:@"cc_glass"
-                                                                      defaultValue:@(YES)];
-    BOOL ccOn = [ccValue isKindOfClass:[NSNumber class]] ? [ccValue boolValue] : YES;
-    if (![[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled] || !ccOn) {
-        [self axs_glassify_removeFromPlatter:surface];
-        [self axs_glassify_removeLiquidSurfaceDecoration:surface];
-        return;
-    }
-
-    CGFloat radius = surface.layer.cornerRadius;
-    if (radius < 6.0 && surface.superview) {
-        radius = surface.superview.layer.cornerRadius;
-    }
-    if (radius < 6.0) {
-        CGRect bounds = surface.bounds;
-        [self axs_glassify_decorateLiquidSurface:surface
-                                          radius:MIN(26.0, MIN(bounds.size.width, bounds.size.height) * 0.5)];
-        return;
-    }
-
-    [self axs_glassify_applyToView:surface
-                      minimumWidth:44.0
-                     minimumHeight:44.0
-            useSharedCornerRadius:NO
-                     featureEnabled:YES];
-}
-
-+ (void)axs_glassify_applyToView:(UIView *)platter
-                    minimumWidth:(CGFloat)minimumWidth
-                   minimumHeight:(CGFloat)minimumHeight
-          useSharedCornerRadius:(BOOL)useSharedCornerRadius
-                   featureEnabled:(BOOL)featureEnabled {
     if (!platter) {
         return;
     }
@@ -264,12 +219,12 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     // unrelated table cells.
     if (!axs_glassify_class_name_contains(platter, @"Notification") &&
         !axs_glassify_class_name_contains(platter, @"Platter") &&
-        !axs_glassify_class_name_contains(platter, @"ShortLook") &&
-        !axs_glassify_class_name_contains(platter, @"ContentModule")) {
+        !axs_glassify_class_name_contains(platter, @"ShortLook")) {
         return;
     }
 
-    if (![[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled] || !featureEnabled) {
+    if (![[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled] ||
+        !axs_glassify_liquid_notificationsEnabled()) {
         [self axs_glassify_removeFromPlatter:platter];
         return;
     }
@@ -280,8 +235,8 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     }
 
     CGRect bounds = platter.bounds;
-    if (bounds.size.width < minimumWidth || bounds.size.height < minimumHeight) {
-        // Not laid out yet, or not a surface we should touch.
+    if (bounds.size.width < 120.0 || bounds.size.height < 30.0) {
+        // Not laid out yet, or not a notification card.
         return;
     }
 
@@ -293,8 +248,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     state.updating = YES;
 
     [self axs_glassify_suppressBackgroundForPlatter:platter state:state];
-    CGFloat radius = [self axs_glassify_cornerRadiusForPlatter:platter state:state
-                                         useSharedRadius:useSharedCornerRadius];
+    CGFloat radius = [self axs_glassify_cornerRadiusForPlatter:platter state:state];
 
     double strength = axs_glassify_liquid_strength();
     BOOL dark = axs_glassify_liquid_dark();
@@ -375,10 +329,8 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
 }
 
 + (CGFloat)axs_glassify_cornerRadiusForPlatter:(UIView *)platter
-                                         state:(AxsGlassifyPlatterState *)state
-                               useSharedRadius:(BOOL)useSharedRadius {
-    // 控制中心不要套用通知那个「圆角」设置，用自己的真实圆角。
-    double preferred = useSharedRadius ? axs_glassify_liquid_cornerRadius() : 0.0;
+                                         state:(AxsGlassifyPlatterState *)state {
+    double preferred = axs_glassify_liquid_cornerRadius();
     if (preferred > 0.5) {
         return (CGFloat)preferred;
     }

@@ -6,8 +6,8 @@
     <key>CFBundleIdentifier</key><string>com.axs.glassify.preferences</string>
     <key>CFBundleName</key><string>液态玻璃（玻璃 + 通知）</string>
     <key>CFBundlePackageType</key><string>BNDL</string>
-    <key>CFBundleShortVersionString</key><string>6.3.0</string>
-    <key>CFBundleVersion</key><string>6.3.0</string>
+    <key>CFBundleShortVersionString</key><string>6.3.1</string>
+    <key>CFBundleVersion</key><string>6.3.1</string>
     <key>NSPrincipalClass</key><string>AxsGlassifyRootListController</string>
 </dict>
 </plist>

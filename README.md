@@ -17,9 +17,10 @@
 - **强制深色玻璃**：关闭时用自适应材质（跟随系统深浅色）；打开后强制深色。
 - **液态玻璃通知**：给通知卡片换成本插件自己的玻璃底板（顶部柔光 + 左右边缘色散 + 45° 镜面描边）。
 - **动态高光**：45° 镜面描边的亮边跟随设备倾斜移动（10 Hz 陀螺仪采样，只在有高光层时开启）。
-- **控制中心**：独立开关。打开后每个模块底板（`CCUIContentModuleBackgroundView`）也走和通知卡片同一套玻璃管道，
-  是真的换材质（iOS 26 上是 `UIGlassEffect`）；拿不到模块真实圆角时自动退成只叠装饰，避免方角玻璃块。
 - **文件夹 / Dock / 通知中心**：这些界面本来就有模糊，叠同一套顶柔光 + 边缘色散 + 镜面描边（只改图层，不动视图层级）。
+
+> 控制中心不处理。试过 hook `CCUIContentModuleBackgroundView` 换模块材质，但模块尺寸/圆角差异太大、
+> 无法在无真机的情况下保证不破相，已在 6.3.1 移除。
 
 ### 通知美化
 
@@ -41,7 +42,6 @@
 |---|---|
 | `Hooks/AxsGlassifyMain.xm` | 系统毛玻璃（`_UIBackdropViewSettings` / `UIVisualEffectView`） |
 | `Hooks/AxsGlassifyNotifications.xm` | 通知卡片：**一个** hook 点同时驱动下面两个引擎 |
-| `Hooks/AxsGlassifyControlCenter.xm` | 控制中心模块底板（懒加载，必要时主动 dlopen ControlCenterUI） |
 | `Sources/AxsGlassifyLiquid.*` | 玻璃底板：iOS 26+ 用 `UIGlassEffect`，低版本回退 chrome 材质 + 高光/色散 |
 | `Sources/AxsGlassifyNotifyAnimator.*` | 渐变 / 游鱼 / 粒子 / 出现动画 / 缩放倾斜 / 溶解 |
 | `Sources/AxsGlassifyNotifyConfig.*` | 通知部分的配置访问器（同一份快照） |
@@ -90,7 +90,7 @@
 - `Sources/AxsGlassifyGlass.{h,m}`：把 `UIBlurEffect` 重映射为目标强度/深浅的材质；用关联对象记住原始 effect，
   关闭时精确还原；`axs_glassify_refreshAllWindows` 在设置变更时遍历窗口树实时更新/还原。
 - `Sources/AxsGlassifyConfig.*`：配置快照；只读，不在 `%ctor` 里写默认值。
-- `AxsGlassifyPrefs/`：合并后的唯一设置面板（66 个 cell），是配置文件的唯一写入方。
+- `AxsGlassifyPrefs/`：合并后的唯一设置面板（64 个 cell），是配置文件的唯一写入方。
 
 ## 设置面板
 
