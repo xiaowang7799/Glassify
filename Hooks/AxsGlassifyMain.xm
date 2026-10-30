@@ -2,6 +2,7 @@
 #import <math.h>
 #import "AxsGlassifyConfig.h"
 #import "AxsGlassifyGlass.h"
+#import "AxsGlassifyLiquid.h"
 #import "AxsGlassifyPreferences.h"
 #import "AxsGlassifyPrivate.h"
 
@@ -108,6 +109,7 @@ static BOOL axs_glassify_darkValue(void) {
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
             [AxsGlassifyGlass axs_glassify_refreshAllWindows];
+            [AxsGlassifyLiquid axs_glassify_refreshPlatters];
         }];
     }
 }

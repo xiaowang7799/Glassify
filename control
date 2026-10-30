@@ -1,8 +1,8 @@
 Package: com.axs.glassify
 Name: 液态玻璃
-Version: 5.2.0
+Version: 5.3.0
 Architecture: iphoneos-arm
-Description: 为系统毛玻璃控件（控制中心/通知/文件夹/Dock）增强液态玻璃质感
+Description: 为系统毛玻璃控件（控制中心/通知/文件夹/Dock）增强液态玻璃质感，并为锁屏通知提供液态玻璃面板
 Maintainer: Axs
 Author: Axs
 Section: Axs-Tweaks
