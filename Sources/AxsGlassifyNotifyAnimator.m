@@ -10,6 +10,19 @@
 // 视图是否已播过入场/爆发（滚动复用不重播）。
 static const void *kAxsLiquidSeenKey = &kAxsLiquidSeenKey;
 
+// 触摸反馈：轻段触感，节流 0.2s（连点不刷屏）。
+static void axs_glassify_notify_haptic(BOOL enabled) {
+    if (!enabled) return;
+    static CFTimeInterval last = 0.0;
+    CFTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (now - last < 0.2) return;
+    last = now;
+    UIImpactFeedbackGenerator *generator =
+        [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [generator prepare];
+    [generator impactOccurred];
+}
+
 // 单条通知的效果容器（视图弱引用，通知消失自动失效）。
 @interface AxsGlassifyNotifyEffect : NSObject
 @property (nonatomic, weak) UIView *view;
@@ -23,6 +36,7 @@ static const void *kAxsLiquidSeenKey = &kAxsLiquidSeenKey;
 @property (nonatomic, strong) CAGradientLayer *iconGlow;  // 图标光晕（背后径向渐变）
 @property (nonatomic, assign) NSUInteger styleSignature;   // 样式记忆（参数未变跳过重刷）
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *fishFlip;   // 每条鱼的朝向缓存
+@property (nonatomic, weak) UIView *gradientHost;       // 渐变挂在哪一层（玻璃 contentView / 材质层）
 @property (nonatomic, assign) float lastGradientAlpha;     // 渐变透明度缓存（避免重复写）
 @property (nonatomic, assign) double chargeNext; // 充电火花倒计时
 @property (nonatomic, strong) CAEmitterLayer *burst;       // 到达粒子爆发
@@ -239,6 +253,30 @@ static UIView *axs_glassify_notify_findBackgroundView(UIView *view, int depth) {
     return nil;
 }
 
+// 渐变层要待在「玻璃之上、文字之下」：优先挂到玻璃底板的 contentView，
+// 没有玻璃（开关关掉 / 还没装上）就退回卡片自己的材质层。
+static UIView *axs_glassify_notify_gradientHost(UIView *view) {
+    UIView *glassContent = [AxsGlassifyLiquid axs_glassify_glassContentViewForPlatter:view];
+    if (glassContent) return glassContent;
+    UIView *background = axs_glassify_notify_findBackgroundView(view, 0);
+    return background ?: view;
+}
+
+static void axs_glassify_notify_attachGradient(AxsGlassifyNotifyEffect *effect, UIView *host,
+                                              CGFloat radius) {
+    if (!effect.gradient || !host) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [effect.gradient removeFromSuperlayer];
+    effect.gradient.frame = host.bounds;
+    // 玻璃底板自己会裁圆角，挂在它里面就不需要再圆一次。
+    effect.gradient.cornerRadius = (host == effect.view) ? radius : 0.0;
+    effect.gradient.zPosition = 0.0;      // 同层里排最前 → 内容之下
+    [host.layer insertSublayer:effect.gradient atIndex:0];
+    [CATransaction commit];
+    effect.gradientHost = host;
+}
+
 // 找通知标题（字体最大的 UILabel）。
 static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     if (depth > 6) return nil;
@@ -268,6 +306,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 @property (nonatomic, assign) CFTimeInterval phase;
 @property (nonatomic, assign) NSUInteger frameCounter;   // 帧计数（降频更新用）
 @property (nonatomic, strong) id prefsObserver;          // 配置变更→重启 tick
+@property (nonatomic, strong) id glassObserver;          // 玻璃底板安装/移除→重挂渐变层
+
+- (void)axs_glassify_notify_rehostGradientForView:(UIView *)view;
 @end
 
 @implementation AxsGlassifyNotifyAnimator
@@ -300,6 +341,18 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
                 [strongSelf axs_glassify_notify_ensureLink];
             }
         }];
+        // 玻璃底板装上/拆掉时把渐变层搬回正确层级。
+        _glassObserver = [[NSNotificationCenter defaultCenter]
+            addObserverForName:AxsGlassifyPlatterGlassChanged
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) {
+            AxsGlassifyNotifyAnimator *strongSelf = weakSelf;
+            id object = note.object;
+            if (strongSelf && [object isKindOfClass:[UIView class]]) {
+                [strongSelf axs_glassify_notify_rehostGradientForView:(UIView *)object];
+            }
+        }];
     }
     return self;
 }
@@ -326,16 +379,14 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     effect.view = view;
     CGFloat radius = view.layer.cornerRadius > 0 ? view.layer.cornerRadius : 24.0;
 
-    // 流动渐变背景（三段渐变横向流动，zPosition 10 浮在通知毛玻璃背景之上）。
+    // 流动渐变背景（三段渐变横向流动）：位置由 attachGradient 决定，
+    // 玻璃装好后会收到通知并重新挂到 contentView，不再盖在文字上。
     CAGradientLayer *gradient = [CAGradientLayer layer];
-    gradient.frame = view.bounds;
-    gradient.cornerRadius = radius;
     gradient.startPoint = CGPointMake(0, 0.5);
     gradient.endPoint = CGPointMake(1, 0.5);
     gradient.opacity = 0;
-    gradient.zPosition = 10;
-    [view.layer addSublayer:gradient];
     effect.gradient = gradient;
+    axs_glassify_notify_attachGradient(effect, axs_glassify_notify_gradientHost(view), radius);
 
     // 鱼缸游鱼：自定义图片优先（多张 ; 分隔轮流），否则手绘 5 色小鱼。
     effect.fishLayers = [NSMutableArray array];
@@ -526,6 +577,20 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     }
 }
 
+// 玻璃底板装上 / 拆掉后，把渐变层搬到正确层级。
+- (void)axs_glassify_notify_rehostGradientForView:(UIView *)view {
+    if (!view) return;
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (e.view != view) continue;
+        CGFloat radius = view.layer.cornerRadius > 0 ? view.layer.cornerRadius : 24.0;
+        UIView *host = axs_glassify_notify_gradientHost(view);
+        if (!host) return;
+        if (e.gradientHost == host && e.gradient.superlayer == host.layer) return;
+        axs_glassify_notify_attachGradient(e, host, radius);
+        return;
+    }
+}
+
 - (void)axs_glassify_notify_detachView:(UIView *)view {
     for (NSInteger i = (NSInteger)self.effects.count - 1; i >= 0; i--) {
         AxsGlassifyNotifyEffect *e = self.effects[(NSUInteger)i];
@@ -627,9 +692,11 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         v.layer.transform = CATransform3DScale(t, s, s, 1.0);
 
         // ── 效果层帧同步 ──
-        e.gradient.frame = v.bounds;
-        e.gradient.cornerRadius = cr > 0 ? (CGFloat)cr
-            : (v.layer.cornerRadius > 0 ? v.layer.cornerRadius : 24.0);
+        UIView *gradientHost = e.gradientHost ?: v;
+        e.gradient.frame = gradientHost.bounds;
+        e.gradient.cornerRadius = (gradientHost == v)
+            ? (cr > 0 ? (CGFloat)cr : (v.layer.cornerRadius > 0 ? v.layer.cornerRadius : 24.0))
+            : 0.0;
         e.burst.frame = v.bounds;
         e.burst.emitterPosition = CGPointMake(CGRectGetMidX(v.bounds), CGRectGetMidY(v.bounds));
 
@@ -695,6 +762,7 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
     if (![config axs_glassify_notify_isEnabled] || ![config axs_glassify_notify_touchGlowOn]) return;
     for (AxsGlassifyNotifyEffect *e in self.effects) {
         if (e.view != view) continue;
+        axs_glassify_notify_haptic([config axs_glassify_notify_touchHaptic]);
         // 渐变闪亮：透明度瞬间拉高再落回。
         float base = e.gradient.opacity;
         CAKeyframeAnimation *glow = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];

@@ -10,7 +10,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = AxsGlassify
 AxsGlassify_FILES = $(wildcard Hooks/*.xm Sources/*.m)
 AxsGlassify_CFLAGS = -fobjc-arc -I./Headers -I./Sources
-AxsGlassify_FRAMEWORKS = UIKit Foundation CoreFoundation QuartzCore
+AxsGlassify_FRAMEWORKS = UIKit Foundation CoreFoundation QuartzCore CoreMotion
 AxsGlassify_LIBRARIES = substrate
 
 include $(THEOS_MAKE_PATH)/tweak.mk

@@ -1,5 +1,6 @@
 #import "AxsGlassifyGlass.h"
 #import "AxsGlassifyConfig.h"
+#import <CoreMotion/CoreMotion.h>
 #import <objc/runtime.h>
 #import <math.h>
 
@@ -95,9 +96,46 @@ static const void *kAxsGlassifyOriginalEffectKey = &kAxsGlassifyOriginalEffectKe
 
 static NSString * const kAxsGlassifyRimName = @"AxsGlassifyRim";
 
+// 高光层弱引用表：姿态变化时只遍历几十个 layer，不用扫整个窗口树。
+static NSHashTable *axs_glassify_rim_registry(void) {
+    static NSHashTable *registry;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        registry = [NSHashTable weakObjectsHashTable];
+    });
+    return registry;
+}
+
+static CMMotionManager *axs_glassify_motion_manager(void) {
+    static CMMotionManager *manager;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        manager = [[CMMotionManager alloc] init];
+        // 10 Hz 对高光位移完全够用，也避开了 60 Hz 的耗电。
+        manager.deviceMotionUpdateInterval = 0.1;
+    });
+    return manager;
+}
+
+static void axs_glassify_applyGravity(CGPoint gravity) {
+    // gravity.y = -1 是竖直握持，此时亮边在顶部；横向倾斜时亮边跟着左右移动。
+    CGFloat sx = fmax(0.0, fmin(1.0, 0.5 + gravity.x * 0.45));
+    CGFloat sy = fmax(0.0, fmin(1.0, 0.5 + gravity.y * 0.45));
+    CGPoint start = CGPointMake(sx, sy);
+    CGPoint end = CGPointMake(1.0 - sx, 1.0 - sy);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (CAGradientLayer *rim in [axs_glassify_rim_registry() allObjects]) {
+        rim.startPoint = start;
+        rim.endPoint = end;
+    }
+    [CATransaction commit];
+}
+
 + (void)axs_glassify_removeRimFromView:(UIView *)view {
     for (CALayer *layer in [view.layer.sublayers copy]) {
         if ([layer.name isEqualToString:kAxsGlassifyRimName]) {
+            [axs_glassify_rim_registry() removeObject:layer];
             [layer removeFromSuperlayer];
         }
     }
@@ -142,6 +180,10 @@ static NSString * const kAxsGlassifyRimName = @"AxsGlassifyRim";
         mask.lineWidth = 1.2;
         rim.mask = mask;
         [view.layer addSublayer:rim];
+        [axs_glassify_rim_registry() addObject:rim];
+        if (axs_glassify_rim_registry().count == 1) {
+            [self axs_glassify_syncMotionHighlight];
+        }
     }
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -151,6 +193,34 @@ static NSString * const kAxsGlassifyRimName = @"AxsGlassifyRim";
     mask.path = [UIBezierPath bezierPathWithRoundedRect:rect
                                            cornerRadius:MAX(0.0, radius - 0.6)].CGPath;
     [CATransaction commit];
+}
+
+#pragma mark - 动态高光
+
++ (void)axs_glassify_syncMotionHighlight {
+    id value = [[AxsGlassifyConfig axs_glassify_shared] axs_glassify_valueForKey:@"motion_highlight"
+                                                                   defaultValue:@(YES)];
+    BOOL motionOn = [value isKindOfClass:[NSNumber class]] ? [value boolValue] : YES;
+    CMMotionManager *manager = axs_glassify_motion_manager();
+    // 没有高光层（或功能关闭）就停表，不白白占着传感器。
+    BOOL shouldRun = [self axs_glassify_enabled] && motionOn &&
+                     axs_glassify_rim_registry().count > 0 && manager.deviceMotionAvailable;
+    if (shouldRun && !manager.deviceMotionActive) {
+        // 弱引用：CMMotionManager 会持有 handler，强引用会成环。
+        __weak CMMotionManager *weakManager = manager;
+        [manager startDeviceMotionUpdatesToQueue:[NSOperationQueue mainQueue]
+                                    withHandler:^(CMDeviceMotion *motion, NSError *error) {
+            // 高光层全都没了（页面被拆）→ 自动停表，避免常驻采样。
+            if (axs_glassify_rim_registry().count == 0) {
+                [weakManager stopDeviceMotionUpdates];
+                return;
+            }
+            if (!motion) return;
+            axs_glassify_applyGravity(motion.gravity);
+        }];
+    } else if (!shouldRun && manager.deviceMotionActive) {
+        [manager stopDeviceMotionUpdates];
+    }
 }
 
 @end

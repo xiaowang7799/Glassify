@@ -100,6 +100,9 @@ static BOOL axs_glassify_notify_bool(id value, BOOL def) {
 - (BOOL)axs_glassify_notify_touchGlowOn {
     return axs_glassify_notify_bool([self axs_glassify_notify_valueForKey:@"touch_glow_on" defaultValue:nil], NO);
 }
+- (BOOL)axs_glassify_notify_touchHaptic {
+    return axs_glassify_notify_bool([self axs_glassify_notify_valueForKey:@"touch_haptic" defaultValue:nil], YES);
+}
 - (BOOL)axs_glassify_notify_fishOn {
     return axs_glassify_notify_bool([self axs_glassify_notify_valueForKey:@"fish_on" defaultValue:nil], NO);
 }

@@ -171,7 +171,7 @@ static NSArray<NSString *> *axs_glassify_presetKeys(void) {
              @"gradient_speed", @"gradient_opacity",
              @"color_source", @"dark_dim",
              @"burst_on", @"burst_intensity", @"dissolve_on",
-             @"appear_mode", @"elastic_intensity", @"touch_glow_on",
+             @"appear_mode", @"elastic_intensity", @"touch_glow_on", @"touch_haptic",
              @"fish_on", @"fish_count", @"fish_size", @"fish_png",
              @"bubble_size", @"bubble_opacity",
              @"particle_on", @"particle_png", @"particle_density",

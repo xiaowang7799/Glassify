@@ -18,6 +18,8 @@
 - (double)axs_glassify_notify_appearIntensity;
 // 触摸发光（touch glow）：触摸通知时渐变闪一下 + 微挤压。
 - (BOOL)axs_glassify_notify_touchGlowOn;
+// 触摸震动反馈（轻段触感）。
+- (BOOL)axs_glassify_notify_touchHaptic;
 // 鱼缸游鱼：每条通知背景里游动的小鱼（数量/大小可调）。
 - (BOOL)axs_glassify_notify_fishOn;
 - (NSInteger)axs_glassify_notify_fishCount;

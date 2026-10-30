@@ -109,6 +109,7 @@ static BOOL axs_glassify_darkValue(void) {
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
             [AxsGlassifyGlass axs_glassify_refreshAllWindows];
+            [AxsGlassifyGlass axs_glassify_syncMotionHighlight];
             [AxsGlassifyLiquid axs_glassify_refreshPlatters];
         }];
     }

@@ -5,6 +5,8 @@
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
+NSString * const AxsGlassifyPlatterGlassChanged = @"com.axs.glassify.platter-glass-changed";
+
 static const void *kAxsGlassifyPlatterStateKey = &kAxsGlassifyPlatterStateKey;
 static NSString * const kAxsGlassifyPlatterHighlightName = @"AxsGlassifyPlatterHighlight";
 static NSString * const kAxsGlassifyPlatterFringeName = @"AxsGlassifyPlatterFringe";
@@ -131,6 +133,18 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     return [objc_getAssociatedObject(view, kAxsGlassifyPlatterStateKey) boolValue];
 }
 
++ (UIView *)axs_glassify_glassContentViewForPlatter:(UIView *)platter {
+    if (!platter) {
+        return nil;
+    }
+    AxsGlassifyPlatterState *state = objc_getAssociatedObject(platter, kAxsGlassifyPlatterStateKey);
+    UIVisualEffectView *glass = state.glassView;
+    if (!glass || glass.superview != platter) {
+        return nil;
+    }
+    return glass.contentView;
+}
+
 #pragma mark - Material
 
 + (BOOL)axs_glassify_hasSystemGlass {
@@ -251,6 +265,9 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         // Behind the label/icon content, in front of the (now hidden) backdrop.
         [platter insertSubview:glass atIndex:0];
         state.glassView = glass;
+        // 渐变层要重新挂到 contentView（玻璃之上、文字之下）。
+        [[NSNotificationCenter defaultCenter] postNotificationName:AxsGlassifyPlatterGlassChanged
+                                                            object:platter];
     }
     if (!glass) {
         state.updating = NO;
@@ -397,6 +414,9 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     objc_setAssociatedObject(platter, kAxsGlassifyPlatterStateKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [axs_glassify_platter_registry() removeObject:platter];
+    // 玻璃拆掉后渐变层需要退回系统材质那一层，否则会跟着 contentView 一起消失。
+    [[NSNotificationCenter defaultCenter] postNotificationName:AxsGlassifyPlatterGlassChanged
+                                                        object:platter];
 }
 
 + (void)axs_glassify_refreshPlatters {

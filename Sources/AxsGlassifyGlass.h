@@ -15,4 +15,7 @@
 // Adds a 45-degree specular rim to a private backdrop view (liquid-glass highlight);
 // removes it when disabled. Safe to call from -layoutSubviews repeatedly.
 + (void)axs_glassify_decorateBackdropView:(UIView *)view;
+// 动态高光：按设备姿态移动镜面描边的亮边方向。只在高光层存在且开关打开时
+// 才会开启陀螺仪采样，没有高光层就自动停表。
++ (void)axs_glassify_syncMotionHighlight;
 @end
