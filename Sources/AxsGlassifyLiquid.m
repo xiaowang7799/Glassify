@@ -212,8 +212,11 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
 #pragma mark - Platter handling
 
 + (void)axs_glassify_applyToPlatter:(UIView *)platter {
-    [self axs_glassify_applyToView:platter minimumWidth:120.0 minimumHeight:30.0
-             useSharedCornerRadius:YES];
+    [self axs_glassify_applyToView:platter
+                      minimumWidth:120.0
+                     minimumHeight:30.0
+            useSharedCornerRadius:YES
+                     featureEnabled:axs_glassify_liquid_notificationsEnabled()];
 }
 
 // 控制中心模块面板（CCUIContentModuleBackgroundView）。圆角拿不到时只叠装饰、
@@ -242,14 +245,18 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         return;
     }
 
-    [self axs_glassify_applyToView:surface minimumWidth:44.0 minimumHeight:44.0
-             useSharedCornerRadius:NO];
+    [self axs_glassify_applyToView:surface
+                      minimumWidth:44.0
+                     minimumHeight:44.0
+            useSharedCornerRadius:NO
+                     featureEnabled:YES];
 }
 
 + (void)axs_glassify_applyToView:(UIView *)platter
                     minimumWidth:(CGFloat)minimumWidth
                    minimumHeight:(CGFloat)minimumHeight
-          useSharedCornerRadius:(BOOL)useSharedCornerRadius {
+          useSharedCornerRadius:(BOOL)useSharedCornerRadius
+                   featureEnabled:(BOOL)featureEnabled {
     if (!platter) {
         return;
     }
@@ -262,7 +269,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         return;
     }
 
-    if (![[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled]) {
+    if (![[AxsGlassifyConfig axs_glassify_shared] axs_glassify_isEnabled] || !featureEnabled) {
         [self axs_glassify_removeFromPlatter:platter];
         return;
     }
