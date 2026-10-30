@@ -28,6 +28,11 @@ extern NSString * const AxsGlassifyPlatterGlassChanged;
 // 玻璃底板的 contentView（装在玻璃之上、文字之下的那一层）。没有玻璃时返回 nil。
 + (UIView *)axs_glassify_glassContentViewForPlatter:(UIView *)platter;
 
+// 给“已经有模糊”的表面（控制中心模块、文件夹、Dock…）叠同样的顶柔光 + 边缘色散，
+// 不改变视图层级。可重复调用。
++ (void)axs_glassify_decorateLiquidSurface:(UIView *)view radius:(CGFloat)radius;
++ (void)axs_glassify_removeLiquidSurfaceDecoration:(UIView *)view;
+
 // Tears the glass background down and restores the views it suppressed.
 + (void)axs_glassify_removeFromPlatter:(UIView *)platter;
 

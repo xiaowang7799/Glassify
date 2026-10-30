@@ -162,6 +162,45 @@ static UIImage *axs_glassify_notify_fishImage(UIColor *base, CGFloat size) {
     return img;
 }
 
+// 手绘小鱼 sprite 缓存：同一套 5 张图只在进程内渲染一次。
+// 之前每张通知 attach 都要画 8 次 Core Graphics，通知一多就白掉帧。
+static UIImage *axs_glassify_notify_fishSprite(NSUInteger index) {
+    static NSArray<UIImage *> *sprites;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSArray<UIColor *> *palette = @[
+            [UIColor colorWithRed:1.00 green:0.62 blue:0.21 alpha:1],   // 金橙
+            [UIColor colorWithRed:0.25 green:0.72 blue:0.85 alpha:1],   // 青蓝
+            [UIColor colorWithRed:1.00 green:0.45 blue:0.62 alpha:1],   // 粉
+            [UIColor colorWithRed:0.66 green:0.42 blue:0.90 alpha:1],   // 紫
+            [UIColor colorWithRed:0.36 green:0.82 blue:0.50 alpha:1],   // 绿
+        ];
+        NSMutableArray<UIImage *> *built = [NSMutableArray arrayWithCapacity:palette.count];
+        for (UIColor *color in palette) {
+            UIImage *image = axs_glassify_notify_fishImage(color, 64.0);
+            if (image) [built addObject:image];
+        }
+        sprites = [built copy];
+    });
+    if (sprites.count == 0) return nil;
+    return sprites[index % sprites.count];
+}
+
+// 爆发回退光点也只需画一次。
+static UIImage *axs_glassify_notify_defaultBurstSprite(void) {
+    static UIImage *sprite;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(12, 12), NO, 0);
+        CGContextRef ctx = UIGraphicsGetCurrentContext();
+        CGContextSetFillColorWithColor(ctx, [UIColor whiteColor].CGColor);
+        CGContextFillEllipseInRect(ctx, CGRectMake(3, 3, 6, 6));
+        sprite = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    });
+    return sprite;
+}
+
 // UIImage 平均色（壁纸/图标取色用）。
 @interface UIImage (AxsGlassifyNotifyAverage)
 - (UIColor *)axs_glassify_notify_averageColor;
@@ -405,13 +444,6 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
         if (img) [customFish addObject:img];
         if (customFish.count >= 6) break;
     }
-    NSArray<UIColor *> *palette = @[
-        [UIColor colorWithRed:1.00 green:0.62 blue:0.21 alpha:1],   // 金橙
-        [UIColor colorWithRed:0.25 green:0.72 blue:0.85 alpha:1],   // 青蓝
-        [UIColor colorWithRed:1.00 green:0.45 blue:0.62 alpha:1],   // 粉
-        [UIColor colorWithRed:0.66 green:0.42 blue:0.90 alpha:1],   // 紫
-        [UIColor colorWithRed:0.36 green:0.82 blue:0.50 alpha:1],   // 绿
-    ];
     for (NSInteger i = 0; i < 8; i++) {
         CALayer *fish = [CALayer layer];
         fish.opacity = 0;
@@ -421,7 +453,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
         // 自定义图优先，否则手绘小鱼；sprite 高分辨率渲染，显示大小由 bounds + fish_size 控制。
         UIImage *img = customFish.count > 0
             ? customFish[(NSUInteger)i % customFish.count]
-            : axs_glassify_notify_fishImage(palette[(NSUInteger)i % palette.count], 64.0);
+            : axs_glassify_notify_fishSprite((NSUInteger)i);
         fish.contents = (__bridge id)img.CGImage;
         [effect.fishNextBubble addObject:@(1.0 + (i % 5) * 0.6 + ((double)arc4random() / UINT32_MAX) * 1.5)];
         [effect.fishFlip addObject:@NO];
@@ -448,12 +480,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
         burstSprite = [UIImage imageWithContentsOfFile:burstPath];
     }
     if (!burstSprite) {
-        UIGraphicsBeginImageContextWithOptions(CGSizeMake(12, 12), NO, 0);
-        CGContextRef bctx = UIGraphicsGetCurrentContext();
-        CGContextSetFillColorWithColor(bctx, [UIColor whiteColor].CGColor);
-        CGContextFillEllipseInRect(bctx, CGRectMake(3, 3, 6, 6));
-        burstSprite = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
+        burstSprite = axs_glassify_notify_defaultBurstSprite();
     }
     CAEmitterCell *bCell = [CAEmitterCell emitterCell];
     bCell.contents = (__bridge id)burstSprite.CGImage;

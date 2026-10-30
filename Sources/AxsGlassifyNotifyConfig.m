@@ -42,10 +42,9 @@ static void axs_glassify_notify_preferencesDidChange(CFNotificationCenterRef cen
 }
 
 - (void)axs_glassify_notify_reload {
+    // 只更新自己的快照。AxsGlassifyConfig 已经在同一个 Darwin 通知上广播
+    // AxsGlassifyPreferencesChanged，这里再发一次会让“遍历窗口树 + 刷新所有卡片”白跑两遍。
     self.snapshot = axs_glassify_readPreferences();
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:AxsGlassifyPreferencesChanged object:self];
-    });
 }
 
 - (id)axs_glassify_notify_valueForKey:(NSString *)key defaultValue:(id)defaultValue {

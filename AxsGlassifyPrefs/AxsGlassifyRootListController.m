@@ -46,19 +46,16 @@ static NSString *axs_glassify_legacyPreferencesPath(void) {
                                                            target:self] mutableCopy];
         [items addObject:[PSSpecifier preferenceSpecifierNamed:@"关于我们" target:self
                      set:nil get:nil detail:nil cell:PSGroupCell edit:nil]];
-        [self axs_glassify_addButton:@"Sileo 越狱源" action:@selector(axs_glassify_openRepository:) to:items];
-        [self axs_glassify_addButton:@"TG分享频道" action:@selector(axs_glassify_openTelegram:) to:items];
-        [self axs_glassify_addButton:@"QQ交流群组" action:@selector(axs_glassify_openQQ:) to:items];
+        [items addObject:[PSSpecifier preferenceSpecifierNamed:@"搞机群友三叶草"
+                                                        target:nil
+                                                           set:nil
+                                                           get:nil
+                                                        detail:nil
+                                                          cell:PSTitleValueCell
+                                                          edit:nil]];
         _specifiers = items;
     }
     return _specifiers;
-}
-
-- (void)axs_glassify_addButton:(NSString *)title action:(SEL)action to:(NSMutableArray *)items {
-    PSSpecifier *item = [PSSpecifier preferenceSpecifierNamed:title target:self
-                          set:nil get:nil detail:nil cell:PSButtonCell edit:nil];
-    item.buttonAction = action;
-    [items addObject:item];
 }
 
 #pragma mark - 读写（唯一写入方，写完广播变更通知）
@@ -81,42 +78,6 @@ static NSString *axs_glassify_legacyPreferencesPath(void) {
         [self presentViewController:alert animated:YES completion:nil];
         [self reloadSpecifiers];
     }
-}
-
-#pragma mark - 链接
-
-- (void)axs_glassify_openURL:(NSURL *)url fallback:(NSURL *)fallback {
-    if (!url) return;
-    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
-        if (success) return;
-        if (fallback) {
-            [self axs_glassify_openURL:fallback fallback:nil];
-        } else {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开链接"
-                message:@"请确认已安装对应应用。" preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-            [self presentViewController:alert animated:YES completion:nil];
-        }
-    }];
-}
-
-- (void)axs_glassify_openRepository:(id)sender {
-    NSString *source = @"https://axs66.github.io/pro";
-    // Encode the entire URL as a path component, including its own delimiters.
-    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
-                              @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"];
-    NSString *encoded = [source stringByAddingPercentEncodingWithAllowedCharacters:allowed];
-    NSURL *primary = [NSURL URLWithString:[@"sileo://source/" stringByAppendingString:encoded]];
-    [self axs_glassify_openURL:primary fallback:[NSURL URLWithString:source]];
-}
-
-- (void)axs_glassify_openTelegram:(id)sender {
-    [self axs_glassify_openURL:[NSURL URLWithString:@"tg://resolve?domain=wxfx8"]
-                   fallback:[NSURL URLWithString:@"https://t.me/wxfx8"]];
-}
-
-- (void)axs_glassify_openQQ:(id)sender {
-    [self axs_glassify_openURL:[NSURL URLWithString:@"mqqapi://card/show_pslcard?src_type=internal&version=1&uin=678055716&card_type=group&source=qrcode"] fallback:nil];
 }
 
 #pragma mark - 滑条

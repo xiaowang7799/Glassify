@@ -1,5 +1,6 @@
 #import "AxsGlassifyGlass.h"
 #import "AxsGlassifyConfig.h"
+#import "AxsGlassifyLiquid.h"
 #import <CoreMotion/CoreMotion.h>
 #import <objc/runtime.h>
 #import <math.h>
@@ -139,6 +140,8 @@ static void axs_glassify_applyGravity(CGPoint gravity) {
             [layer removeFromSuperlayer];
         }
     }
+    // 顶柔光 / 边缘色散一并拿下。
+    [AxsGlassifyLiquid axs_glassify_removeLiquidSurfaceDecoration:view];
 }
 
 + (void)axs_glassify_decorateBackdropView:(UIView *)view {
@@ -193,6 +196,13 @@ static void axs_glassify_applyGravity(CGPoint gravity) {
     mask.path = [UIBezierPath bezierPathWithRoundedRect:rect
                                            cornerRadius:MAX(0.0, radius - 0.6)].CGPath;
     [CATransaction commit];
+
+    // 控制中心模块 / 文件夹 / Dock / 通知中心：在原有模糊之上叠顶柔光 + 边缘色散，
+    // 得到和通知卡片一致的液态观感（不改视图层级，所以不会破布局）。
+    // 通知卡片的玻璃底板自己已经画过这两层，这里跳过避免重复。
+    if (![AxsGlassifyLiquid axs_glassify_isGlassView:view]) {
+        [AxsGlassifyLiquid axs_glassify_decorateLiquidSurface:view radius:radius];
+    }
 }
 
 #pragma mark - 动态高光
