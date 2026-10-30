@@ -438,6 +438,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 - (void)axs_glassify_notify_updateLink;
 - (BOOL)axs_glassify_notify_needsTicking;
 - (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt toView:(UIView *)view;
+- (void)axs_glassify_notify_quiesce;
 @end
 
 @implementation AxsGlassifyNotifyAnimator
@@ -986,8 +987,29 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
     if ([self axs_glassify_notify_needsTicking]) {
         [self axs_glassify_notify_ensureLink];
     } else {
+        // 停表前先把逐帧驱动的图层收干净，否则关掉渐变/游鱼时画面会冻在原地。
+        [self axs_glassify_notify_quiesce];
         [self axs_glassify_notify_stopLink];
     }
+}
+
+- (void)axs_glassify_notify_quiesce {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    BOOL gradientOn = [config axs_glassify_notify_gradientOn];
+    BOOL fishOn = [config axs_glassify_notify_fishOn];
+    BOOL particleOn = [config axs_glassify_notify_particleOn];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (!gradientOn && e.gradient.opacity != 0.0f) e.gradient.opacity = 0.0f;
+        if (!fishOn) {
+            for (CALayer *fish in e.fishLayers) {
+                if (fish.opacity != 0.0f) fish.opacity = 0.0f;
+            }
+        }
+        if (!particleOn && e.season.opacity != 0.0f) e.season.opacity = 0.0f;
+    }
+    [CATransaction commit];
 }
 
 // 只在真的不同时才写 layer.transform：读 + 比较几乎免费，写入会进 CA 事务。
