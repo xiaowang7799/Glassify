@@ -31,6 +31,9 @@ extern NSString * const AxsGlassifyPlatterGlassChanged;
 // 给“已经有模糊”的表面（控制中心模块、文件夹、Dock…）叠同样的顶柔光 + 边缘色散，
 // 不改变视图层级。可重复调用。
 + (void)axs_glassify_decorateLiquidSurface:(UIView *)view radius:(CGFloat)radius;
+
+// 控制中心模块底板：走和通知卡片同一套玻璃管道（受 cc_glass 开关控制）。
++ (void)axs_glassify_applyToSurface:(UIView *)surface;
 + (void)axs_glassify_removeLiquidSurfaceDecoration:(UIView *)view;
 
 // Tears the glass background down and restores the views it suppressed.

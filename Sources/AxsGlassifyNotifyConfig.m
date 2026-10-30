@@ -129,6 +129,10 @@ static BOOL axs_glassify_notify_bool(id value, BOOL def) {
 - (BOOL)axs_glassify_notify_chargeFx {
     return axs_glassify_notify_bool([self axs_glassify_notify_valueForKey:@"charge_fx" defaultValue:nil], NO);
 }
+- (double)axs_glassify_notify_chargeSize {
+    return axs_glassify_notify_clamped([self axs_glassify_notify_valueForKey:@"charge_size" defaultValue:nil],
+                                       1.0, 0.6, 2.0);
+}
 - (BOOL)axs_glassify_notify_lowPowerGuard {
     return axs_glassify_notify_bool([self axs_glassify_notify_valueForKey:@"low_power_guard" defaultValue:nil], YES);
 }

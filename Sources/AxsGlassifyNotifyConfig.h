@@ -33,6 +33,8 @@
 - (NSInteger)axs_glassify_notify_particleDir;
 // 充电特效（⚡金色火花）。
 - (BOOL)axs_glassify_notify_chargeFx;
+// 充电蝴蝶大小（0.6–2.0）。
+- (double)axs_glassify_notify_chargeSize;
 // 低电量保护（自动降载）。
 - (BOOL)axs_glassify_notify_lowPowerGuard;
 // 时段自动切换（白天/夜间预设名）。

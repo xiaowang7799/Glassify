@@ -186,6 +186,93 @@ static UIImage *axs_glassify_notify_fishSprite(NSUInteger index) {
     return sprites[index % sprites.count];
 }
 
+// 亮晶晶的蝴蝶：半透明渐变翅膀 + 白色亮边 + 星芒点绀（充电特效用）。
+static UIImage *axs_glassify_notify_butterflyImage(CGFloat size) {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGFloat w = size, h = size;
+
+    UIBezierPath *(^wing)(BOOL, BOOL) = ^UIBezierPath *(BOOL upper, BOOL left) {
+        CGFloat s = left ? -1.0 : 1.0;
+        UIBezierPath *p = [UIBezierPath bezierPath];
+        [p moveToPoint:CGPointMake(w * 0.50, h * 0.52)];
+        if (upper) {
+            [p addCurveToPoint:CGPointMake(w * (0.50 + s * 0.45), h * 0.08)
+                 controlPoint1:CGPointMake(w * (0.50 + s * 0.08), h * 0.42)
+                 controlPoint2:CGPointMake(w * (0.50 + s * 0.40), h * 0.02)];
+            [p addCurveToPoint:CGPointMake(w * 0.50, h * 0.52)
+                 controlPoint1:CGPointMake(w * (0.50 + s * 0.56), h * 0.30)
+                 controlPoint2:CGPointMake(w * (0.50 + s * 0.20), h * 0.58)];
+        } else {
+            [p addCurveToPoint:CGPointMake(w * (0.50 + s * 0.32), h * 0.94)
+                 controlPoint1:CGPointMake(w * (0.50 + s * 0.14), h * 0.62)
+                 controlPoint2:CGPointMake(w * (0.50 + s * 0.40), h * 0.76)];
+            [p addCurveToPoint:CGPointMake(w * 0.50, h * 0.52)
+                 controlPoint1:CGPointMake(w * (0.50 + s * 0.40), h * 1.04)
+                 controlPoint2:CGPointMake(w * (0.50 + s * 0.12), h * 0.80)];
+        }
+        [p closePath];
+        return p;
+    };
+
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGFloat comps[] = {1.00f, 0.52f, 0.88f, 0.88f,   0.42f, 0.86f, 1.00f, 0.52f};
+    CGFloat locs[] = {0.0f, 1.0f};
+
+    for (NSInteger i = 0; i < 4; i++) {
+        UIBezierPath *p = wing((i % 2) == 0, (i / 2) == 0);
+        CGContextSaveGState(ctx);
+        [p addClip];
+        CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 2);
+        CGContextDrawLinearGradient(ctx, grad, CGPointMake(w * 0.5, 0), CGPointMake(w * 0.5, h), 0);
+        CGGradientRelease(grad);
+        CGContextRestoreGState(ctx);
+        [[UIColor colorWithWhite:1.0 alpha:0.88] setStroke];
+        p.lineWidth = size * 0.012;
+        [p stroke];
+    }
+    CGColorSpaceRelease(space);
+
+    // 身体
+    UIBezierPath *body = [UIBezierPath bezierPathWithRoundedRect:
+        CGRectMake(w * 0.466, h * 0.26, w * 0.068, h * 0.52) cornerRadius:w * 0.034];
+    [[UIColor colorWithRed:0.44 green:0.30 blue:0.66 alpha:0.95] setFill];
+    [body fill];
+
+    // 触角
+    [[UIColor colorWithWhite:1.0 alpha:0.72] setStroke];
+    UIBezierPath *ant = [UIBezierPath bezierPath];
+    [ant moveToPoint:CGPointMake(w * 0.49, h * 0.28)];
+    [ant addQuadCurveToPoint:CGPointMake(w * 0.34, h * 0.10) controlPoint:CGPointMake(w * 0.40, h * 0.21)];
+    [ant moveToPoint:CGPointMake(w * 0.51, h * 0.28)];
+    [ant addQuadCurveToPoint:CGPointMake(w * 0.66, h * 0.10) controlPoint:CGPointMake(w * 0.60, h * 0.21)];
+    ant.lineWidth = size * 0.012;
+    ant.lineCapStyle = kCGLineCapRound;
+    [ant stroke];
+
+    // 星芒点缀（亮晶晶）
+    const CGFloat starPos[4][3] = {{0.20, 0.30, 1.00}, {0.78, 0.20, 0.80},
+                                   {0.34, 0.80, 0.70}, {0.72, 0.72, 0.90}};
+    for (int i = 0; i < 4; i++) {
+        CGFloat cx = w * starPos[i][0];
+        CGFloat cy = h * starPos[i][1];
+        CGFloat r = size * 0.035 * starPos[i][2];
+        UIBezierPath *sp = [UIBezierPath bezierPath];
+        [sp moveToPoint:CGPointMake(cx, cy - r)];
+        [sp addQuadCurveToPoint:CGPointMake(cx + r, cy) controlPoint:CGPointMake(cx + r * 0.15, cy - r * 0.15)];
+        [sp addQuadCurveToPoint:CGPointMake(cx, cy + r) controlPoint:CGPointMake(cx + r * 0.15, cy + r * 0.15)];
+        [sp addQuadCurveToPoint:CGPointMake(cx - r, cy) controlPoint:CGPointMake(cx - r * 0.15, cy + r * 0.15)];
+        [sp addQuadCurveToPoint:CGPointMake(cx, cy - r) controlPoint:CGPointMake(cx - r * 0.15, cy - r * 0.15)];
+        [sp closePath];
+        [[UIColor colorWithWhite:1.0 alpha:0.92] setFill];
+        [sp fill];
+    }
+
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+
 // 爆发回退光点也只需画一次。
 static UIImage *axs_glassify_notify_defaultBurstSprite(void) {
     static UIImage *sprite;
@@ -1076,40 +1163,67 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
             }
         }
 
-        // 充电特效：⚡ 金色火花从底部上飘（充电中且未低电量时，快照判定）。
+        // 充电特效：亮晶晶的蝴蝶从底部飘起（充电中且未低电量时，快照判定）。
         if (charging) {
             e.chargeNext -= (double)dt;
             if (e.chargeNext <= 0) {
-                e.chargeNext = 1.1 + ((double)arc4random() / UINT32_MAX) * 1.2;
-                static UIImage *sparkSprite = nil;
+                e.chargeNext = 1.4 + ((double)arc4random() / UINT32_MAX) * 1.4;
+                static UIImage *butterflySprite = nil;
                 static dispatch_once_t onceToken;
                 dispatch_once(&onceToken, ^{
-                    sparkSprite = axs_glassify_notify_emojiImage(@"⚡", 24.0);
+                    butterflySprite = axs_glassify_notify_butterflyImage(96.0);
                 });
-                CGFloat ss = 14.0;
-                CALayer *spark = [CALayer layer];
-                spark.bounds = CGRectMake(0, 0, ss, ss);
-                spark.contents = (__bridge id)sparkSprite.CGImage;
-                spark.position = CGPointMake((CGFloat)(((double)arc4random() / UINT32_MAX)
-                                                      * v.bounds.size.width),
-                                             CGRectGetMaxY(v.bounds) - 4.0);
-                spark.zPosition = 7;
-                [v.layer addSublayer:spark];
-                CABasicAnimation *rise = [CABasicAnimation animationWithKeyPath:@"position.y"];
-                rise.fromValue = @(spark.position.y);
-                rise.toValue = @(spark.position.y - 70);
-                CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
-                fade.fromValue = @0.95;
-                fade.toValue = @0.0;
-                CAAnimationGroup *g = [CAAnimationGroup animation];
-                g.animations = @[rise, fade];
-                g.duration = 1.9;
-                g.removedOnCompletion = YES;
-                [spark addAnimation:g forKey:@"axs_charge_spark"];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                    [spark removeFromSuperlayer];
-                });
+                if (butterflySprite) {
+                    CGFloat side = 22.0 * (CGFloat)[config axs_glassify_notify_chargeSize];
+                    CGFloat span = MAX(side, v.bounds.size.width - side);
+                    CGFloat startX = side * 0.5 + (CGFloat)(((double)arc4random() / UINT32_MAX) * span);
+                    CGFloat startY = CGRectGetMaxY(v.bounds) - side * 0.4;
+
+                    CALayer *fly = [CALayer layer];
+                    fly.bounds = CGRectMake(0, 0, side, side);
+                    fly.contents = (__bridge id)butterflySprite.CGImage;
+                    fly.opacity = 0.0f;
+                    fly.position = CGPointMake(startX, startY);
+                    fly.zPosition = 7;
+                    [v.layer addSublayer:fly];
+
+                    CFTimeInterval duration = 2.8;
+                    // 上升
+                    CABasicAnimation *rise = [CABasicAnimation animationWithKeyPath:@"position.y"];
+                    rise.fromValue = @(startY);
+                    rise.toValue = @(startY - 96.0);
+                    // 横向飘移
+                    CGFloat drift = (10.0 + (CGFloat)(((double)arc4random() / UINT32_MAX) * 16.0))
+                                    * (arc4random_uniform(2) == 0 ? 1.0 : -1.0);
+                    CAKeyframeAnimation *sway = [CAKeyframeAnimation animationWithKeyPath:@"position.x"];
+                    sway.values = @[@(startX), @(startX + drift * 0.6),
+                                    @(startX + drift), @(startX + drift * 0.5)];
+                    sway.keyTimes = @[@0, @0.35, @0.7, @1.0];
+                    // 扇翅膀：横向压缩 + 轻微旋转
+                    CAKeyframeAnimation *flap = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale.x"];
+                    flap.values = @[@1.0, @0.38, @1.0, @0.38, @1.0, @0.38, @1.0];
+                    flap.duration = 0.62;
+                    flap.repeatCount = 4.0f;
+                    CAKeyframeAnimation *tilt = [CAKeyframeAnimation animationWithKeyPath:@"transform.rotation.z"];
+                    tilt.values = @[@(-0.10), @(0.10), @(-0.06), @(0.06)];
+                    tilt.keyTimes = @[@0, @0.4, @0.75, @1.0];
+                    // 淡入淡出
+                    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+                    fade.values = @[@0.0, @0.95, @0.95, @0.0];
+                    fade.keyTimes = @[@0, @0.12, @0.72, @1.0];
+
+                    CAAnimationGroup *group = [CAAnimationGroup animation];
+                    group.animations = @[rise, sway, flap, tilt, fade];
+                    group.duration = duration;
+                    group.removedOnCompletion = YES;
+                    [fly addAnimation:group forKey:@"axs_charge_butterfly"];
+
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                                 (int64_t)((duration + 0.2) * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        [fly removeFromSuperlayer];
+                    });
+                }
             }
         }
 
