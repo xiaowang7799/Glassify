@@ -216,7 +216,8 @@ static void axs_glassify_applyGravity(CGPoint gravity) {
                 return;
             }
             if (!motion) return;
-            axs_glassify_applyGravity(motion.gravity);
+            CMAcceleration gravity = motion.gravity;
+            axs_glassify_applyGravity(CGPointMake(gravity.x, gravity.y));
         }];
     } else if (!shouldRun && manager.deviceMotionActive) {
         [manager stopDeviceMotionUpdates];
