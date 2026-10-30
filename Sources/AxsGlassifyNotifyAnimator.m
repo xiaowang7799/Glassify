@@ -435,6 +435,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 @property (nonatomic, strong) id glassObserver;          // 玻璃底板安装/移除→重挂渐变层
 
 - (void)axs_glassify_notify_rehostGradientForView:(UIView *)view;
+- (void)axs_glassify_notify_updateLink;
+- (BOOL)axs_glassify_notify_needsTicking;
+- (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt toView:(UIView *)view;
 @end
 
 @implementation AxsGlassifyNotifyAnimator
@@ -464,7 +467,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
             (void)note;
             AxsGlassifyNotifyAnimator *strongSelf = weakSelf;
             if (strongSelf && strongSelf.effects.count > 0) {
-                [strongSelf axs_glassify_notify_ensureLink];
+                [strongSelf axs_glassify_notify_updateLink];
             }
         }];
         // 玻璃底板装上/拆掉时把渐变层搬回正确层级。
@@ -653,7 +656,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     }
 
     [self axs_glassify_notify_refreshForView:view];
-    [self axs_glassify_notify_ensureLink];
+    [self axs_glassify_notify_updateLink];
 
     // 到达粒子爆发：一次性播放（仅首次挂载）。延迟 0.1s 等布局完成，按实际 bounds 中心发射。
     if ([config axs_glassify_notify_burstOn] && !effect.burstPlayed && !seen) {
@@ -717,7 +720,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
             [self.effects removeObjectAtIndex:(NSUInteger)i];
         }
     }
-    if (self.effects.count == 0) [self axs_glassify_notify_stopLink];
+    [self axs_glassify_notify_updateLink];
 }
 
 // 样式签名：样式参数与尺寸未变时，refresh 整段跳过（滚动时 layoutSubviews 高频触发）。
@@ -753,6 +756,11 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         if (e.view != view) continue;
         UIView *v = e.view;
         if (!v) return;
+        // 系统每次布局都会改写 transform：在签名记忆之前先校正一次（不同才写）。
+        // 这样即使显示链接因为“没有动画”而停表，通知大小也不会失效。
+        [self axs_glassify_notify_applyScale:[config axs_glassify_notify_notifyScale]
+                                        tilt:[config axs_glassify_notify_tiltIntensity]
+                                      toView:v];
         // 样式签名记忆：参数/尺寸没变就不碰任何属性。
         NSUInteger sig = axs_glassify_notify_styleSignature(config, v);
         if (sig == e.styleSignature) return;
@@ -796,14 +804,9 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         }
 
         // ── 通知缩放 + 3D 倾斜（transform 归我们，frame 归系统） ──
-        double s = [config axs_glassify_notify_notifyScale];
-        double tilt = [config axs_glassify_notify_tiltIntensity];
-        CATransform3D t = CATransform3DIdentity;
-        if (tilt > 0) {
-            t.m34 = -1.0f / 500.0f;
-            t = CATransform3DRotate(t, (CGFloat)(0.10 * tilt), 1, 0, 0);
-        }
-        v.layer.transform = CATransform3DScale(t, s, s, 1.0);
+        [self axs_glassify_notify_applyScale:[config axs_glassify_notify_notifyScale]
+                                        tilt:[config axs_glassify_notify_tiltIntensity]
+                                      toView:v];
 
         // ── 效果层帧同步 ──
         UIView *gradientHost = e.gradientHost ?: v;
@@ -968,6 +971,39 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
     [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
 
+- (BOOL)axs_glassify_notify_needsTicking {
+    if (self.effects.count == 0) return NO;
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    if (![config axs_glassify_notify_isEnabled]) return NO;
+    // 只有这几项需要逐帧驱动。出现/爆发/溶解/触摸发光都是 CA 动画，不需要 tick。
+    return [config axs_glassify_notify_gradientOn] ||
+           [config axs_glassify_notify_fishOn] ||
+           [config axs_glassify_notify_particleOn] ||
+           [config axs_glassify_notify_chargeFx];
+}
+
+- (void)axs_glassify_notify_updateLink {
+    if ([self axs_glassify_notify_needsTicking]) {
+        [self axs_glassify_notify_ensureLink];
+    } else {
+        [self axs_glassify_notify_stopLink];
+    }
+}
+
+// 只在真的不同时才写 layer.transform：读 + 比较几乎免费，写入会进 CA 事务。
+- (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt toView:(UIView *)view {
+    if (!view) return;
+    CATransform3D desired = CATransform3DIdentity;
+    if (tilt > 0) {
+        desired.m34 = -1.0f / 500.0f;
+        desired = CATransform3DRotate(desired, (CGFloat)(0.10 * tilt), 1, 0, 0);
+    }
+    desired = CATransform3DScale(desired, (CGFloat)scale, (CGFloat)scale, 1.0);
+    if (!CATransform3DEqualToTransform(view.layer.transform, desired)) {
+        view.layer.transform = desired;
+    }
+}
+
 - (void)axs_glassify_notify_stopLink {
     [self.link invalidate];
     self.link = nil;
@@ -1005,13 +1041,22 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
     double hue2 = [config axs_glassify_notify_gradientHue2];
     double nScale = [config axs_glassify_notify_notifyScale];
     double tiltI = [config axs_glassify_notify_tiltIntensity];
+    // 低电量模式 + 电池状态：查询不便宜（batteryState 要走 IOKit），降到 1Hz 轮询。
+    static BOOL cachedLowPower = NO;
+    static UIDeviceBatteryState cachedBatteryState = UIDeviceBatteryStateUnknown;
+    static CFTimeInterval lastPowerPoll = 0.0;
+    CFTimeInterval nowPoll = CFAbsoluteTimeGetCurrent();
+    if (nowPoll - lastPowerPoll > 1.0) {
+        lastPowerPoll = nowPoll;
+        cachedLowPower = [NSProcessInfo processInfo].isLowPowerModeEnabled;
+        cachedBatteryState = [UIDevice currentDevice].batteryState;
+    }
     // 低电量保护：降粒子密度、降吐泡频率、关充电特效。
-    BOOL lowPower = [config axs_glassify_notify_lowPowerGuard]
-                    && [NSProcessInfo processInfo].isLowPowerModeEnabled;
+    BOOL lowPower = [config axs_glassify_notify_lowPowerGuard] && cachedLowPower;
     BOOL charging = NO;
     if (chargeOn && !lowPower) {
-        UIDeviceBatteryState bs = [UIDevice currentDevice].batteryState;
-        charging = (bs == UIDeviceBatteryStateCharging || bs == UIDeviceBatteryStateFull);
+        charging = (cachedBatteryState == UIDeviceBatteryStateCharging ||
+                    cachedBatteryState == UIDeviceBatteryStateFull);
     }
 
     [CATransaction begin];
@@ -1030,16 +1075,9 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
             continue;
         }
 
-        // 通知缩放 + 3D 倾斜：逐帧重施（系统布局会改写 transform，一次性施加会被覆盖
-        // —— "通知大小失效" 的根因）。每帧一次 layer 写，便宜。
-        {
-            CATransform3D tt = CATransform3DIdentity;
-            if (tiltI > 0) {
-                tt.m34 = -1.0f / 500.0f;
-                tt = CATransform3DRotate(tt, (CGFloat)(0.10 * tiltI), 1, 0, 0);
-            }
-            v.layer.transform = CATransform3DScale(tt, (CGFloat)nScale, (CGFloat)nScale, 1.0);
-        }
+        // 通知缩放 + 3D 倾斜：系统布局会改写 transform，所以每帧校一次；
+        // 但只在真的不同时才写（写入会进 CA 事务，读+比较几乎免费）。
+        [self axs_glassify_notify_applyScale:nScale tilt:tiltI toView:v];
 
         // 流动渐变：配色来源（手动双色 / 应用图标取色 / 壁纸取色）+ 色相漂移 + 位点往复。
         if (gradientOn) {

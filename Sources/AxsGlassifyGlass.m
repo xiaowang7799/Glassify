@@ -8,6 +8,19 @@
 // Stores each view's original blur effect so disabling restores the system look.
 static const void *kAxsGlassifyOriginalEffectKey = &kAxsGlassifyOriginalEffectKey;
 
+// 记住上一次装饰时的几何。滚动时 -layoutSubviews 会对每个背景反复触发，
+// 而重建一条圆角 CGPath 是这套玻璃里最贵的一笔。几何没变就直接返回。
+@interface AxsGlassifyDecorationMemo : NSObject
+@property (nonatomic, assign) CGSize size;
+@property (nonatomic, assign) CGFloat radius;
+@property (nonatomic, assign) BOOL valid;
+@end
+
+@implementation AxsGlassifyDecorationMemo
+@end
+
+static const void *kAxsGlassifyDecorationMemoKey = &kAxsGlassifyDecorationMemoKey;
+
 @implementation AxsGlassifyGlass
 
 + (BOOL)axs_glassify_enabled {
@@ -134,6 +147,8 @@ static void axs_glassify_applyGravity(CGPoint gravity) {
 }
 
 + (void)axs_glassify_removeRimFromView:(UIView *)view {
+    AxsGlassifyDecorationMemo *memo = objc_getAssociatedObject(view, kAxsGlassifyDecorationMemoKey);
+    memo.valid = NO;
     for (CALayer *layer in [view.layer.sublayers copy]) {
         if ([layer.name isEqualToString:kAxsGlassifyRimName]) {
             [axs_glassify_rim_registry() removeObject:layer];
@@ -157,6 +172,20 @@ static void axs_glassify_applyGravity(CGPoint gravity) {
         [self axs_glassify_removeRimFromView:view];
         return;
     }
+
+    AxsGlassifyDecorationMemo *memo = objc_getAssociatedObject(view, kAxsGlassifyDecorationMemoKey);
+    if (memo.valid && CGSizeEqualToSize(memo.size, size) &&
+        fabs(memo.radius - radius) < 0.5) {
+        return;
+    }
+    if (!memo) {
+        memo = [AxsGlassifyDecorationMemo new];
+        objc_setAssociatedObject(view, kAxsGlassifyDecorationMemoKey, memo,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    memo.size = size;
+    memo.radius = radius;
+    memo.valid = YES;
     CAGradientLayer *rim = nil;
     for (CALayer *layer in view.layer.sublayers) {
         if ([layer.name isEqualToString:kAxsGlassifyRimName] &&

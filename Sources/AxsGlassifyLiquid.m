@@ -4,6 +4,7 @@
 #import <objc/message.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <string.h>
 
 NSString * const AxsGlassifyPlatterGlassChanged = @"com.axs.glassify.platter-glass-changed";
 
@@ -63,9 +64,13 @@ static BOOL axs_glassify_liquid_notificationsEnabled(void) {
 
 #pragma mark - Runtime helpers
 
-static BOOL axs_glassify_class_name_contains(UIView *view, NSString *needle) {
-    NSString *name = NSStringFromClass([view class]);
-    return name && [name rangeOfString:needle].location != NSNotFound;
+// 热路径：-layoutSubviews 里每个卡片/背景都会走一遍，用 C 字符串避免每次都建 NSString。
+static BOOL axs_glassify_class_name_contains(UIView *view, const char *needle) {
+    if (!view || !needle) {
+        return NO;
+    }
+    const char *name = class_getName(object_getClass(view));
+    return name != NULL && strstr(name, needle) != NULL;
 }
 
 // Weak registry so a settings change can re-apply the material to platters that
@@ -93,10 +98,10 @@ static UIView *axs_glassify_find_material_view(UIView *root, UIView *view, UIVie
         if (skip && (subview == skip || [subview isDescendantOfView:skip])) {
             continue;
         }
-        NSString *name = NSStringFromClass([subview class]);
-        BOOL matches = [name rangeOfString:@"Backdrop"].location != NSNotFound ||
-                       [name rangeOfString:@"Material"].location != NSNotFound ||
-                       [name rangeOfString:@"Background"].location != NSNotFound;
+        const char *name = class_getName(object_getClass(subview));
+        BOOL matches = name != NULL && (strstr(name, "Backdrop") != NULL ||
+                                        strstr(name, "Material") != NULL ||
+                                        strstr(name, "Background") != NULL);
         if (matches && subview.alpha > 0.99) {
             CGRect frame = [root convertRect:subview.bounds fromView:subview];
             if (CGRectGetWidth(frame) >= CGRectGetWidth(target) * 0.9 &&
@@ -217,9 +222,9 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     }
     // Guards against a leaked hook (e.g. an inherited -layoutSubviews) styling
     // unrelated table cells.
-    if (!axs_glassify_class_name_contains(platter, @"Notification") &&
-        !axs_glassify_class_name_contains(platter, @"Platter") &&
-        !axs_glassify_class_name_contains(platter, @"ShortLook")) {
+    if (!axs_glassify_class_name_contains(platter, "Notification") &&
+        !axs_glassify_class_name_contains(platter, "Platter") &&
+        !axs_glassify_class_name_contains(platter, "ShortLook")) {
         return;
     }
 

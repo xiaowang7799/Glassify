@@ -1,4 +1,6 @@
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+#import <string.h>
 #import "AxsGlassifyLiquid.h"
 #import "AxsGlassifyNotifyAnimator.h"
 #import "AxsGlassifyNotifyConfig.h"
@@ -15,7 +17,9 @@ static BOOL axs_glassify_contains_short_look(UIView *view, NSUInteger depth) {
         return NO;
     }
     for (UIView *subview in view.subviews) {
-        if ([NSStringFromClass([subview class]) containsString:@"ShortLook"]) {
+        // 热路径（每次 cell 布局）：用 C 字符串比较，不建 NSString。
+        const char *name = class_getName(object_getClass(subview));
+        if (name != NULL && strstr(name, "ShortLook") != NULL) {
             return YES;
         }
         if (axs_glassify_contains_short_look(subview, depth + 1)) {
