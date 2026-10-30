@@ -11,6 +11,7 @@ static NSString * const kAxsGlassifyPlatterFringeName = @"AxsGlassifyPlatterFrin
 
 @interface AxsGlassifyPlatterState : NSObject
 @property (nonatomic, strong) UIVisualEffectView *glassView;
+@property (nonatomic, weak) UIView *backgroundHost;
 @property (nonatomic, copy) NSArray<UIView *> *suppressedViews;
 @property (nonatomic, assign) CGFloat cornerRadius;
 @property (nonatomic, assign) double appliedStrength;
@@ -61,6 +62,39 @@ static NSHashTable *axs_glassify_platter_registry(void) {
         registry = [NSHashTable weakObjectsHashTable];
     });
     return registry;
+}
+
+// Notification platters draw their own material through MaterialKit: the card is an
+// MTTitledPlatterView and the background is an MTMaterialView (or a plain
+// _UIBackdropView on older builds). Both are matched by class name, and only when
+// the view covers (almost) the whole platter so button-sized materials survive.
+static UIView *axs_glassify_find_material_view(UIView *root, UIView *view, UIView *skip,
+                                               NSUInteger depth) {
+    if (depth > 4) {
+        return nil;
+    }
+    CGRect target = root.bounds;
+    for (UIView *subview in view.subviews) {
+        if (skip && (subview == skip || [subview isDescendantOfView:skip])) {
+            continue;
+        }
+        NSString *name = NSStringFromClass([subview class]);
+        BOOL matches = [name rangeOfString:@"Backdrop"].location != NSNotFound ||
+                       [name rangeOfString:@"Material"].location != NSNotFound ||
+                       [name rangeOfString:@"Background"].location != NSNotFound;
+        if (matches && subview.alpha > 0.99) {
+            CGRect frame = [root convertRect:subview.bounds fromView:subview];
+            if (CGRectGetWidth(frame) >= CGRectGetWidth(target) * 0.9 &&
+                CGRectGetHeight(frame) >= CGRectGetHeight(target) * 0.9) {
+                return subview;
+            }
+        }
+        UIView *found = axs_glassify_find_material_view(root, subview, skip, depth + 1);
+        if (found) {
+            return found;
+        }
+    }
+    return nil;
 }
 
 static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *name) {
@@ -179,7 +213,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     }
     state.updating = YES;
 
-    [self axs_glassify_suppressBackdropsOnPlatter:platter state:state];
+    [self axs_glassify_suppressBackgroundForPlatter:platter state:state];
     CGFloat radius = [self axs_glassify_cornerRadiusForPlatter:platter state:state];
 
     double strength = axs_glassify_liquid_strength();
@@ -228,27 +262,24 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     state.updating = NO;
 }
 
-+ (void)axs_glassify_suppressBackdropsOnPlatter:(UIView *)platter
-                                          state:(AxsGlassifyPlatterState *)state {
-    if (state.suppressedViews) {
++ (void)axs_glassify_suppressBackgroundForPlatter:(UIView *)platter
+                                            state:(AxsGlassifyPlatterState *)state {
+    if (state.backgroundHost) {
         return;
     }
-    NSMutableArray<UIView *> *suppressed = [NSMutableArray array];
-    for (UIView *subview in platter.subviews) {
-        if (subview == state.glassView) {
-            continue;
-        }
-        if (!axs_glassify_class_name_contains(subview, @"Backdrop")) {
-            continue;
-        }
-        // Only hide surfaces that are currently fully visible; restoring them is
-        // then just alpha = 1.
-        if (subview.alpha > 0.99) {
-            subview.alpha = 0.0;
-            [suppressed addObject:subview];
-        }
+    UIView *host = axs_glassify_find_material_view(platter, platter, state.glassView, 0);
+    if (!host) {
+        // The platter may paint its material itself; the glass panel still covers
+        // it, it just keeps the system tint underneath.
+        return;
     }
-    state.suppressedViews = suppressed;
+    state.backgroundHost = host;
+    // Only hide surfaces that are currently fully visible; restoring them is then
+    // just alpha = 1.
+    if (host.alpha > 0.99) {
+        host.alpha = 0.0;
+        state.suppressedViews = @[host];
+    }
 }
 
 + (CGFloat)axs_glassify_cornerRadiusForPlatter:(UIView *)platter
@@ -327,6 +358,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         view.alpha = 1.0;
     }
     state.suppressedViews = nil;
+    state.backgroundHost = nil;
     [state.glassView removeFromSuperview];
     state.glassView = nil;
     objc_setAssociatedObject(platter, kAxsGlassifyPlatterStateKey, nil,

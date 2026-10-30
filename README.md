@@ -20,7 +20,8 @@
 `NCNotificationListCell`，里面已经有 ShortLook 时不再重复上玻璃，避免两层玻璃叠在一起）。
 每张卡片上做三件事：
 
-1. 把卡片自带的 `_UIBackdropView` 背景临时隐藏（只隐藏类名含 `Backdrop` 且原本完全可见的子视图，关闭开关时逐个还原）；
+1. 找到卡片自带的底材（MaterialKit 的 `MTMaterialView`，旧系统是 `_UIBackdropView`）并临时隐藏。只认几乎铺满整张卡片、
+   且原本完全可见的那个，避免把按钮之类的小底材一起藏掉；关闭开关时逐个还原；
 2. 在 index 0 插入一个 `UIVisualEffectView` 作为卡片底板，圆角跟随原卡片（取不到时退回 22pt）；
 3. 在底板上叠加装饰层：顶部 55% 的白色柔光、左右 5% 的边缘色散、以及 `AxsGlassifyGlass` 统一加的 45° 镜面描边。
 
