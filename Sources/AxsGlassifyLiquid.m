@@ -401,17 +401,6 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
 
 #pragma mark - 已有模糊面的装饰（控制中心 / 文件夹 / Dock）
 
-// 用一个圆角矩形 mask 让装饰层只画在圆角内（不依赖视图自己的 masksToBounds）。
-static CAShapeLayer *axs_glassify_rounded_mask(CALayer *owner) {
-    if ([owner.mask isKindOfClass:[CAShapeLayer class]]) {
-        return (CAShapeLayer *)owner.mask;
-    }
-    CAShapeLayer *mask = [CAShapeLayer layer];
-    mask.fillColor = [UIColor whiteColor].CGColor;
-    owner.mask = mask;
-    return mask;
-}
-
 + (void)axs_glassify_decorateLiquidSurface:(UIView *)view radius:(CGFloat)radius {
     if (!view || radius < 6.0) {
         return;
@@ -431,16 +420,19 @@ static CAShapeLayer *axs_glassify_rounded_mask(CALayer *owner) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
 
-    highlight.frame = CGRectMake(0.0, 0.0, bounds.size.width, bounds.size.height * 0.55);
+    // 不用 CAShapeLayer 遮罩：带 mask 的图层会强制离屏合成，铺在每个背景上很贵。
+    // 渐变层自己的 cornerRadius + masksToBounds 就能裁圆角，省掉一层离屏 pass。
+    highlight.frame = bounds;
     highlight.colors = @[(id)[UIColor colorWithWhite:1.0 alpha:0.20].CGColor,
                          (id)[UIColor colorWithWhite:1.0 alpha:0.04].CGColor,
+                         (id)[UIColor clearColor].CGColor,
                          (id)[UIColor clearColor].CGColor];
-    highlight.locations = @[@0.0, @0.45, @1.0];
+    highlight.locations = @[@0.0, @0.28, @0.55, @1.0];
     highlight.startPoint = CGPointMake(0.5, 0.0);
     highlight.endPoint = CGPointMake(0.5, 1.0);
+    highlight.cornerRadius = radius;
+    highlight.masksToBounds = YES;
     highlight.zPosition = 997.0;
-    axs_glassify_rounded_mask(highlight).path =
-        [UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:radius].CGPath;
 
     fringe.frame = bounds;
     fringe.colors = @[(id)[UIColor colorWithRed:0.35 green:0.85 blue:1.0 alpha:0.08].CGColor,
@@ -450,9 +442,9 @@ static CAShapeLayer *axs_glassify_rounded_mask(CALayer *owner) {
     fringe.locations = @[@0.0, @0.05, @0.95, @1.0];
     fringe.startPoint = CGPointMake(0.0, 0.5);
     fringe.endPoint = CGPointMake(1.0, 0.5);
+    fringe.cornerRadius = radius;
+    fringe.masksToBounds = YES;
     fringe.zPosition = 996.0;
-    axs_glassify_rounded_mask(fringe).path =
-        [UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:radius].CGPath;
 
     [CATransaction commit];
 }

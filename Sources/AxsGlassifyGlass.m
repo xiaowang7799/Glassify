@@ -137,6 +137,17 @@ static void axs_glassify_applyGravity(CGPoint gravity) {
     CGFloat sy = fmax(0.0, fmin(1.0, 0.5 + gravity.y * 0.45));
     CGPoint start = CGPointMake(sx, sy);
     CGPoint end = CGPointMake(1.0 - sx, 1.0 - sy);
+
+    // 关键：给图层赋同样的值也会让它重新提交、重绘（CA 不做值比较）。
+    // 之前是 10Hz 无条件写，手机静止放桌上也一直在重绘带遮罩的渐变层。
+    static CGPoint lastStart = {0.0, 0.0};
+    static BOOL hasLast = NO;
+    if (hasLast && fabs(start.x - lastStart.x) < 0.004 && fabs(start.y - lastStart.y) < 0.004) {
+        return;
+    }
+    lastStart = start;
+    hasLast = YES;
+
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     for (CAGradientLayer *rim in [axs_glassify_rim_registry() allObjects]) {
@@ -237,9 +248,10 @@ static void axs_glassify_applyGravity(CGPoint gravity) {
 #pragma mark - 动态高光
 
 + (void)axs_glassify_syncMotionHighlight {
+    // 默认关闭：这项要常驻姿态采样，代价比纯静态装饰高得多。
     id value = [[AxsGlassifyConfig axs_glassify_shared] axs_glassify_valueForKey:@"motion_highlight"
-                                                                   defaultValue:@(YES)];
-    BOOL motionOn = [value isKindOfClass:[NSNumber class]] ? [value boolValue] : YES;
+                                                                   defaultValue:@(NO)];
+    BOOL motionOn = [value isKindOfClass:[NSNumber class]] ? [value boolValue] : NO;
     CMMotionManager *manager = axs_glassify_motion_manager();
     // 没有高光层（或功能关闭）就停表，不白白占着传感器。
     BOOL shouldRun = [self axs_glassify_enabled] && motionOn &&

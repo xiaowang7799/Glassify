@@ -456,8 +456,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     self = [super init];
     if (self) {
         _effects = [NSMutableArray array];
-        // 充电特效需要电池状态。
-        [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+        // 电池监听改成按需打开（见 tick 里的 1Hz 轮询）：常开 monitoring 本身就是一笔常驻开销。
         // 空闲停表后，配置变更时重新拉起 tick（弱引用防循环）。
         __weak AxsGlassifyNotifyAnimator *weakSelf = self;
         _prefsObserver = [[NSNotificationCenter defaultCenter]
@@ -983,9 +982,21 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
            [config axs_glassify_notify_chargeFx];
 }
 
+// 只有渐变时 15fps 足够（颜色本来就只按 10Hz 级变化）；有鱼/粒子/蝴蝶才要 30fps。
+- (NSUInteger)axs_glassify_notify_preferredFPS {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    if ([config axs_glassify_notify_fishOn] ||
+        [config axs_glassify_notify_particleOn] ||
+        [config axs_glassify_notify_chargeFx]) {
+        return 30;
+    }
+    return 15;
+}
+
 - (void)axs_glassify_notify_updateLink {
     if ([self axs_glassify_notify_needsTicking]) {
         [self axs_glassify_notify_ensureLink];
+        self.link.preferredFramesPerSecond = [self axs_glassify_notify_preferredFPS];
     } else {
         // 停表前先把逐帧驱动的图层收干净，否则关掉渐变/游鱼时画面会冻在原地。
         [self axs_glassify_notify_quiesce];
@@ -1071,7 +1082,12 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
     if (nowPoll - lastPowerPoll > 1.0) {
         lastPowerPoll = nowPoll;
         cachedLowPower = [NSProcessInfo processInfo].isLowPowerModeEnabled;
-        cachedBatteryState = [UIDevice currentDevice].batteryState;
+        // 只有开着充电特效时才需要电池状态；不用时把 monitoring 关掉。
+        UIDevice *device = [UIDevice currentDevice];
+        if (device.batteryMonitoringEnabled != chargeOn) {
+            device.batteryMonitoringEnabled = chargeOn;
+        }
+        cachedBatteryState = chargeOn ? device.batteryState : UIDeviceBatteryStateUnknown;
     }
     // 低电量保护：降粒子密度、降吐泡频率、关充电特效。
     BOOL lowPower = [config axs_glassify_notify_lowPowerGuard] && cachedLowPower;
