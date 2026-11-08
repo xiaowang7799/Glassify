@@ -69,6 +69,8 @@
 - (double)axs_glassify_notify_shadowIntensity;
 - (double)axs_glassify_notify_tiltIntensity;
 - (double)axs_glassify_notify_notifyWidth;
+// S 曲线滑动：拖动通知时视图沿贝塞尔 S 形轨迹运动的水平幅度（0–60pt，0=关）。
+- (double)axs_glassify_notify_sCurveAmp;
 // Generic accessors.
 - (id)axs_glassify_notify_valueForKey:(NSString *)key defaultValue:(id)defaultValue;
 - (void)axs_glassify_notify_reload;

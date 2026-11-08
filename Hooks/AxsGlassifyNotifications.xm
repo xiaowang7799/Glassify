@@ -51,7 +51,7 @@ static NSArray<NSString *> *axs_glassify_notify_presetKeys(void) {
              @"title_color_on", @"title_hue", @"title_glow",
              @"icon_corner", @"icon_scale", @"icon_glow",
              @"corner_radius", @"notify_opacity", @"shadow_intensity",
-             @"tilt_intensity", @"notify_width",
+             @"tilt_intensity", @"notify_width", @"s_curve_amp",
              @"auto_schedule", @"schedule_day", @"schedule_night"];
 }
 

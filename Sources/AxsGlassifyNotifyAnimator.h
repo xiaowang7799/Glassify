@@ -17,6 +17,7 @@
 // 消失消散：划走/清除时液态溶解（willMoveToWindow:nil 时调用）。
 - (void)axs_glassify_notify_dissolveForView:(UIView *)view;
 // 滑动拖尾：拖动时渐变跟手 / 松手回位。
+// S 曲线开启时（s_curve_amp > 0），整张卡片还会沿三次贝塞尔 S 形轨迹横向摆动。
 - (void)axs_glassify_notify_dragGradientForView:(UIView *)view translationY:(CGFloat)dy;
 - (void)axs_glassify_notify_endDragForView:(UIView *)view;
 @end

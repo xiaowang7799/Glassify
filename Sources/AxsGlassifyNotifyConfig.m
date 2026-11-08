@@ -218,6 +218,9 @@ static BOOL axs_glassify_notify_bool(id value, BOOL def) {
 - (double)axs_glassify_notify_notifyWidth {
     return axs_glassify_notify_clamped([self axs_glassify_notify_valueForKey:@"notify_width" defaultValue:nil], 1.0, 0.6, 1.0);
 }
+- (double)axs_glassify_notify_sCurveAmp {
+    return axs_glassify_notify_clamped([self axs_glassify_notify_valueForKey:@"s_curve_amp" defaultValue:nil], 0.0, 0.0, 60.0);
+}
 
 - (void)dealloc {
     CFNotificationCenterRemoveEveryObserver(CFNotificationCenterGetDarwinNotifyCenter(),

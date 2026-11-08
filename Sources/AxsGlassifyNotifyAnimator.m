@@ -23,6 +23,14 @@ static void axs_glassify_notify_haptic(BOOL enabled) {
     [generator impactOccurred];
 }
 
+// 拖动的归一化进度（-1…1）映射成贝塞尔 S 曲线位移比例。
+// s(t) = 3t² - 2t³ 等价于三次贝塞尔 P0=(0,0) P1=(1/3,0) P2=(2/3,1) P3=(1,1)：
+// 中段加速、两端收敛，C1 连续且奇对称——上滑一个方向摆、下滑反向摆，来回轨迹平滑不打断。
+static CGFloat axs_glassify_notify_sCurveShape(CGFloat t) {
+    CGFloat c = (CGFloat)fmax(-1.0, fmin(1.0, t));
+    return 3.0f * c * c - 2.0f * c * c * c;
+}
+
 // 单条通知的效果容器（视图弱引用，通知消失自动失效）。
 @interface AxsGlassifyNotifyEffect : NSObject
 @property (nonatomic, weak) UIView *view;
@@ -45,6 +53,7 @@ static void axs_glassify_notify_haptic(BOOL enabled) {
 @property (nonatomic, assign) NSInteger lastParticleKey;   // 粒子样式缓存（-1 = 回退态）
 @property (nonatomic, assign) CFTimeInterval lastLoadAttempt;  // 图片加载重试时间戳
 @property (nonatomic, assign) BOOL burstPlayed;
+@property (nonatomic, assign) CGFloat dragProgress;        // S 曲线滑动进度（-1…1，0 = 未拖动）
 @end
 @implementation AxsGlassifyNotifyEffect
 @end
@@ -437,7 +446,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 - (void)axs_glassify_notify_rehostGradientForView:(UIView *)view;
 - (void)axs_glassify_notify_updateLink;
 - (BOOL)axs_glassify_notify_needsTicking;
-- (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt toView:(UIView *)view;
+- (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt offsetX:(CGFloat)offsetX toView:(UIView *)view;
 - (void)axs_glassify_notify_quiesce;
 @end
 
@@ -760,6 +769,8 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         // 这样即使显示链接因为“没有动画”而停表，通知大小也不会失效。
         [self axs_glassify_notify_applyScale:[config axs_glassify_notify_notifyScale]
                                         tilt:[config axs_glassify_notify_tiltIntensity]
+                                     offsetX:e.dragProgress
+                                             * (CGFloat)[config axs_glassify_notify_sCurveAmp]
                                       toView:v];
         // 样式签名记忆：参数/尺寸没变就不碰任何属性。
         NSUInteger sig = axs_glassify_notify_styleSignature(config, v);
@@ -806,6 +817,8 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         // ── 通知缩放 + 3D 倾斜（transform 归我们，frame 归系统） ──
         [self axs_glassify_notify_applyScale:[config axs_glassify_notify_notifyScale]
                                         tilt:[config axs_glassify_notify_tiltIntensity]
+                                     offsetX:e.dragProgress
+                                             * (CGFloat)[config axs_glassify_notify_sCurveAmp]
                                       toView:v];
 
         // ── 效果层帧同步 ──
@@ -898,9 +911,11 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
     }
 }
 
-#pragma mark - 滑动拖尾（拖动通知时渐变跟手，松手回位）
+#pragma mark - 滑动拖尾（拖动通知时渐变跟手 + 视图沿 S 曲线运动，松手回位）
 
 - (void)axs_glassify_notify_dragGradientForView:(UIView *)view translationY:(CGFloat)dy {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    CGFloat amp = (CGFloat)[config axs_glassify_notify_sCurveAmp];
     for (AxsGlassifyNotifyEffect *e in self.effects) {
         if (e.view != view) continue;
         CGFloat clamped = (CGFloat)fmax(-60.0, fmin(60.0, dy * 0.35));
@@ -908,14 +923,28 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         [CATransaction setDisableActions:YES];
         e.gradient.position = CGPointMake(CGRectGetMidX(view.bounds),
                                           CGRectGetMidY(view.bounds) + clamped);
+        // S 曲线滑动：把纵向拖动量归一化成 t(-1…1)，经三次贝塞尔 s 形映射后驱动横向位移。
+        // amp = 0 时保持原有行为（transform 由缩放/倾斜单独负责，这里不动）。
+        if (amp > 0) {
+            CGFloat progress = (CGFloat)fmax(-1.0, fmin(1.0, dy / 120.0));
+            e.dragProgress = axs_glassify_notify_sCurveShape(progress);
+            [self axs_glassify_notify_applyScale:[config axs_glassify_notify_notifyScale]
+                                            tilt:[config axs_glassify_notify_tiltIntensity]
+                                         offsetX:e.dragProgress * amp
+                                          toView:view];
+        }
         [CATransaction commit];
         return;
     }
 }
 
 - (void)axs_glassify_notify_endDragForView:(UIView *)view {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    CGFloat amp = (CGFloat)[config axs_glassify_notify_sCurveAmp];
     for (AxsGlassifyNotifyEffect *e in self.effects) {
         if (e.view != view) continue;
+        CGFloat startProgress = e.dragProgress;
+        e.dragProgress = 0;
         // 弹回中心（带缓动）。
         CABasicAnimation *back = [CABasicAnimation animationWithKeyPath:@"position"];
         back.fromValue = [NSValue valueWithCGPoint:e.gradient.position];
@@ -924,9 +953,40 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         back.duration = 0.35;
         back.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
         [e.gradient addAnimation:back forKey:@"axs_drag_back"];
+        // S 曲线回位：沿同一条曲线反向滑回原点，用 keyframe 采样保持轨迹形状。
+        if (amp > 0 && fabs(startProgress) > 0.002) {
+            CAKeyframeAnimation *slideBack = [CAKeyframeAnimation animationWithKeyPath:@"transform"];
+            NSMutableArray *values = [NSMutableArray array];
+            NSMutableArray *keyTimes = [NSMutableArray array];
+            for (NSInteger i = 0; i <= 12; i++) {
+                float k = (float)i / 12.0f;
+                float eased = 1.0f - k * k;               // easeOut 采样
+                CGFloat off = (CGFloat)eased * startProgress * amp;
+                CATransform3D tf = CATransform3DIdentity;
+                double tilt = [config axs_glassify_notify_tiltIntensity];
+                if (tilt > 0) {
+                    tf.m34 = -1.0f / 500.0f;
+                    tf = CATransform3DRotate(tf, (CGFloat)(0.10 * tilt), 1, 0, 0);
+                }
+                tf = CATransform3DScale(tf, (CGFloat)[config axs_glassify_notify_notifyScale],
+                                        (CGFloat)[config axs_glassify_notify_notifyScale], 1.0);
+                tf = CATransform3DTranslate(tf, off, 0, 0);
+                [values addObject:[NSValue valueWithCATransform3D:tf]];
+                [keyTimes addObject:@(k)];
+            }
+            slideBack.values = values;
+            slideBack.keyTimes = keyTimes;
+            slideBack.duration = 0.35;
+            slideBack.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+            [view.layer addAnimation:slideBack forKey:@"axs_drag_scurve_back"];
+        }
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         e.gradient.position = CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds));
+        [self axs_glassify_notify_applyScale:[config axs_glassify_notify_notifyScale]
+                                        tilt:[config axs_glassify_notify_tiltIntensity]
+                                     offsetX:0
+                                      toView:view];
         [CATransaction commit];
         return;
     }
@@ -1024,7 +1084,8 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
 }
 
 // 只在真的不同时才写 layer.transform：读 + 比较几乎免费，写入会进 CA 事务。
-- (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt toView:(UIView *)view {
+// offsetX：S 曲线滑动的当前横向偏移（pt，0 = 无偏移），叠加在缩放/倾斜之上。
+- (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt offsetX:(CGFloat)offsetX toView:(UIView *)view {
     if (!view) return;
     CATransform3D desired = CATransform3DIdentity;
     if (tilt > 0) {
@@ -1032,6 +1093,9 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
         desired = CATransform3DRotate(desired, (CGFloat)(0.10 * tilt), 1, 0, 0);
     }
     desired = CATransform3DScale(desired, (CGFloat)scale, (CGFloat)scale, 1.0);
+    if (offsetX != 0) {
+        desired = CATransform3DTranslate(desired, offsetX, 0, 0);
+    }
     if (!CATransform3DEqualToTransform(view.layer.transform, desired)) {
         view.layer.transform = desired;
     }
@@ -1074,6 +1138,7 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
     double hue2 = [config axs_glassify_notify_gradientHue2];
     double nScale = [config axs_glassify_notify_notifyScale];
     double tiltI = [config axs_glassify_notify_tiltIntensity];
+    CGFloat sCurveAmp = (CGFloat)[config axs_glassify_notify_sCurveAmp];
     // 低电量模式 + 电池状态：查询不便宜（batteryState 要走 IOKit），降到 1Hz 轮询。
     static BOOL cachedLowPower = NO;
     static UIDeviceBatteryState cachedBatteryState = UIDeviceBatteryStateUnknown;
@@ -1115,7 +1180,10 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
 
         // 通知缩放 + 3D 倾斜：系统布局会改写 transform，所以每帧校一次；
         // 但只在真的不同时才写（写入会进 CA 事务，读+比较几乎免费）。
-        [self axs_glassify_notify_applyScale:nScale tilt:tiltI toView:v];
+        // S 曲线滑动：把当前拖拽进度换算成横向偏移一起写回，系统改写后自愈。
+        [self axs_glassify_notify_applyScale:nScale tilt:tiltI
+                                     offsetX:e.dragProgress * sCurveAmp
+                                      toView:v];
 
         // 流动渐变：配色来源（手动双色 / 应用图标取色 / 壁纸取色）+ 色相漂移 + 位点往复。
         if (gradientOn) {
