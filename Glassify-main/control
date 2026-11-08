@@ -1,0 +1,14 @@
+Package: com.axs.glassify
+Name: 液态玻璃
+Version: 6.4.1
+Architecture: iphoneos-arm
+Description: 液态玻璃 + 锁屏通知美化二合一：系统毛玻璃增强、通知流动渐变/游鱼/粒子/出现动画/尺寸圆角光影
+Maintainer: Axs
+Author: Axs
+Section: Axs-Tweaks
+Depends: mobilesubstrate, preferenceloader, firmware (>= 15.0)
+Conflicts: com.axs.notifyliquid
+Replaces: com.axs.notifyliquid
+Provides: com.axs.notifyliquid
+Icon: https://axs66.github.io/pro/icon/glassify.png
+Sileodepiction: https://axs66.github.io/pro/sileodepiction/glassify/js.json

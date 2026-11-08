@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>AxsGlassifyPrefs</string>
+    <key>CFBundleIdentifier</key><string>com.axs.glassify.preferences</string>
+    <key>CFBundleName</key><string>液态玻璃（玻璃 + 通知）</string>
+    <key>CFBundlePackageType</key><string>BNDL</string>
+    <key>CFBundleShortVersionString</key><string>6.4.1</string>
+    <key>CFBundleVersion</key><string>6.4.1</string>
+    <key>NSPrincipalClass</key><string>AxsGlassifyRootListController</string>
+</dict>
+</plist>
