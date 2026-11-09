@@ -85,6 +85,16 @@ jobs:
           echo "=== .deb files ==="
           find ./packages -name "*.deb" -type f
 
+      - name: Tag Packages With Variant
+        run: |
+          # rootless 与 roothide 出包的文件名完全一致，两个矩阵任务会往同一个
+          # Release 上传同名资源，后完成的把先完成的覆盖掉（之前 Release 里
+          # 只有 rootless）。加变体后缀，让两个包都留在 Release 上。
+          for f in ./packages/*.deb; do
+            mv "$f" "${f%.deb}-${{ matrix.build_variant }}.deb"
+          done
+          ls -l ./packages
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
