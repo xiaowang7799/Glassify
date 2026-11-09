@@ -24,11 +24,15 @@ static void axs_glassify_notify_haptic(BOOL enabled) {
 }
 
 // 拖动的归一化进度（-1…1）映射成贝塞尔 S 曲线位移比例。
-// s(t) = 3t² - 2t³ 等价于三次贝塞尔 P0=(0,0) P1=(1/3,0) P2=(2/3,1) P3=(1,1)：
-// 中段加速、两端收敛，C1 连续且奇对称——上滑一个方向摆、下滑反向摆，来回轨迹平滑不打断。
+// 取 u = |t|，s = 3u² - 2u³（三次贝塞尔 P0=(0,0) P1=(1/3,0) P2=(2/3,1) P3=(1,1)
+// 在 [0,1] 上的取值），再按 t 的符号还原方向：中段加速、两端收敛、C1 连续，
+// 且对原点奇对称——上滑和下滑摆幅一致。直接在 [-1,1] 上用 3t²-2t³ 会丢掉奇对称性：
+// t=-0.5 得 1.0、t=-1 得 5.0，下滑时位移会放大到 5 倍幅度。
 static CGFloat axs_glassify_notify_sCurveShape(CGFloat t) {
     CGFloat c = (CGFloat)fmax(-1.0, fmin(1.0, t));
-    return 3.0f * c * c - 2.0f * c * c * c;
+    CGFloat u = (CGFloat)fabs(c);
+    CGFloat s = 3.0f * u * u - 2.0f * u * u * u;
+    return c < 0.0f ? -s : s;
 }
 
 // 单条通知的效果容器（视图弱引用，通知消失自动失效）。
@@ -977,7 +981,8 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
             slideBack.values = values;
             slideBack.keyTimes = keyTimes;
             slideBack.duration = 0.35;
-            slideBack.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+            // 缓动已经烘进 values（eased 采样），这里必须线性，否则会被再缓一次、回位发闷。
+            slideBack.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
             [view.layer addAnimation:slideBack forKey:@"axs_drag_scurve_back"];
         }
         [CATransaction begin];
