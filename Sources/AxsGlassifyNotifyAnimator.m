@@ -26,15 +26,16 @@ static void axs_glassify_notify_haptic(BOOL enabled) {
     [generator impactOccurred];
 }
 
-// 拖动的归一化进度（-1…1）映射成贝塞尔 S 曲线位移比例。
-// 取 u = |t|，s = 3u² - 2u³（三次贝塞尔 P0=(0,0) P1=(1/3,0) P2=(2/3,1) P3=(1,1)
-// 在 [0,1] 上的取值），再按 t 的符号还原方向：中段加速、两端收敛、C1 连续，
-// 且对原点奇对称——上滑和下滑摆幅一致。直接在 [-1,1] 上用 3t²-2t³ 会丢掉奇对称性：
-// t=-0.5 得 1.0、t=-1 得 5.0，下滑时位移会放大到 5 倍幅度。
+// 拖动进度（-1…1）→ 横向偏移比例（-1…1），让卡片真的沿 S 形轨迹走。
+// 取值 sin(πu)·sin(2πu) 再归一化到 [-1,1]（u = |t|）：
+//   u=0 起始居中 → u≈0.30 摆到 +1 → u=0.5 过中线 → u≈0.70 摆到 -1 → u=1 回到居中。
+// 曲线两端按 u² 起势，所以刚起手不会横向跳；乘 t 的符号后，上滑与下滑镜像对称。
+// （旧的 3u²-2u³ 在 0→1 上单调，只是一道弧，永远看不到反向的那一半，所以看不出 S。）
 static CGFloat axs_glassify_notify_sCurveShape(CGFloat t) {
     CGFloat c = (CGFloat)fmax(-1.0, fmin(1.0, t));
     CGFloat u = (CGFloat)fabs(c);
-    CGFloat s = 3.0f * u * u - 2.0f * u * u * u;
+    // 1.2990 = 1 / max(sin(πu)·sin(2πu))，归一化后最大横向偏移正好等于设置值。
+    CGFloat s = (CGFloat)(sin(M_PI * u) * sin(2.0 * M_PI * u) * 1.2990);
     return c < 0.0f ? -s : s;
 }
 
