@@ -26,6 +26,16 @@ static NSString * const kAxsGlassifyPlatterFringeName = @"AxsGlassifyPlatterFrin
 @implementation AxsGlassifyPlatterState
 @end
 
+// 同一个关联键有两种用途：卡片上存 AxsGlassifyPlatterState，玻璃底板自己存 @YES 标记。
+// 取值一律过一遍类型判断，避免把 @YES 当成状态对象解引用（反过来也一样）。
+static AxsGlassifyPlatterState *axs_glassify_platter_state(UIView *view) {
+    if (!view) {
+        return nil;
+    }
+    id value = objc_getAssociatedObject(view, kAxsGlassifyPlatterStateKey);
+    return [value isKindOfClass:[AxsGlassifyPlatterState class]] ? (AxsGlassifyPlatterState *)value : nil;
+}
+
 #pragma mark - Preferences
 
 static double axs_glassify_liquid_strength(void) {
@@ -135,14 +145,15 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     if (!view) {
         return NO;
     }
-    return [objc_getAssociatedObject(view, kAxsGlassifyPlatterStateKey) boolValue];
+    id marker = objc_getAssociatedObject(view, kAxsGlassifyPlatterStateKey);
+    return [marker isKindOfClass:[NSNumber class]] && [marker boolValue];
 }
 
 + (UIView *)axs_glassify_glassContentViewForPlatter:(UIView *)platter {
     if (!platter) {
         return nil;
     }
-    AxsGlassifyPlatterState *state = objc_getAssociatedObject(platter, kAxsGlassifyPlatterStateKey);
+    AxsGlassifyPlatterState *state = axs_glassify_platter_state(platter);
     UIVisualEffectView *glass = state.glassView;
     if (!glass || glass.superview != platter) {
         return nil;
@@ -234,7 +245,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         return;
     }
 
-    AxsGlassifyPlatterState *state = objc_getAssociatedObject(platter, kAxsGlassifyPlatterStateKey);
+    AxsGlassifyPlatterState *state = axs_glassify_platter_state(platter);
     if (state.updating) {
         return;
     }
@@ -464,7 +475,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     if (!platter) {
         return;
     }
-    AxsGlassifyPlatterState *state = objc_getAssociatedObject(platter, kAxsGlassifyPlatterStateKey);
+    AxsGlassifyPlatterState *state = axs_glassify_platter_state(platter);
     if (!state) {
         return;
     }

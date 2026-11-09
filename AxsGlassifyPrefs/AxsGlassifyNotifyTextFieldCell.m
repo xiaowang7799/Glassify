@@ -32,7 +32,7 @@
         [self.contentView addSubview:_axs_field];
 
         NSString *key = [specifier propertyForKey:@"key"];
-        id value = axs_glassify_readPreferences()[key];
+        id value = axs_glassify_cachedPreferences()[key];
         if (![value isKindOfClass:[NSString class]]) {
             value = [specifier propertyForKey:@"default"];
         }

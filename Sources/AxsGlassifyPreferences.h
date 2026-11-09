@@ -19,6 +19,27 @@ static inline NSDictionary *axs_glassify_readPreferences(void) {
     return [defaults persistentDomainForName:AxsGlassifyPreferencesDomain] ?: @{};
 }
 
+// 设置面板的批量读取：每行 specifier 都要读一次配置，直接走 readPreferences
+// 会在打开面板时把 plist 解析 60 多次。按文件修改时间缓存，写盘后 mtime 变了自然失效。
+static inline NSDictionary *axs_glassify_cachedPreferences(void) {
+    static NSDictionary *cached = nil;
+    static NSTimeInterval cachedStamp = -1.0;
+    NSString *path = axs_glassify_preferencesPath();
+    NSDate *modified = nil;
+    if (path.length > 0) {
+        NSDictionary *attributes = [[NSFileManager defaultManager]
+            attributesOfItemAtPath:path error:nil];
+        modified = attributes[NSFileModificationDate];
+    }
+    NSTimeInterval stamp = modified ? [modified timeIntervalSinceReferenceDate] : -1.0;
+    if (cached && stamp == cachedStamp) {
+        return cached;
+    }
+    cached = axs_glassify_readPreferences();
+    cachedStamp = stamp;
+    return cached;
+}
+
 // The PreferenceBundle is the only caller allowed to write.
 static inline BOOL axs_glassify_writePreference(NSString *key, id value, NSError **error) {
     NSString *path = axs_glassify_preferencesPath();

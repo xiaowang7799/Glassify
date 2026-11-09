@@ -4,6 +4,8 @@
 
 @interface AxsGlassifyNotifyConfig ()
 @property (atomic, copy) NSDictionary *snapshot;
+// 每次重新加载 +1：界面据此判断“配置有没有变过”，比逐项比较 20 多个键便宜。
+@property (atomic, assign) NSUInteger generation;
 @property (nonatomic, strong) dispatch_queue_t reloadQueue;
 @end
 
@@ -45,6 +47,11 @@ static void axs_glassify_notify_preferencesDidChange(CFNotificationCenterRef cen
     // 只更新自己的快照。AxsGlassifyConfig 已经在同一个 Darwin 通知上广播
     // AxsGlassifyPreferencesChanged，这里再发一次会让“遍历窗口树 + 刷新所有卡片”白跑两遍。
     self.snapshot = axs_glassify_readPreferences();
+    self.generation = self.generation + 1;
+}
+
+- (NSUInteger)axs_glassify_notify_generation {
+    return self.generation;
 }
 
 - (id)axs_glassify_notify_valueForKey:(NSString *)key defaultValue:(id)defaultValue {

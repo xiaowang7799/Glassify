@@ -6,6 +6,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <math.h>
+#import <string.h>
 
 // 视图是否已播过入场/爆发（滚动复用不重播）。
 static const void *kAxsLiquidSeenKey = &kAxsLiquidSeenKey;
@@ -46,7 +47,6 @@ static CGFloat axs_glassify_notify_sCurveShape(CGFloat t) {
 @property (nonatomic, weak) UILabel *titleLabel;       // 标题标签（最大的字）
 @property (nonatomic, weak) UIImageView *iconView;     // 应用图标
 @property (nonatomic, strong) CAGradientLayer *iconGlow;  // 图标光晕（背后径向渐变）
-@property (nonatomic, assign) NSUInteger styleSignature;   // 样式记忆（参数未变跳过重刷）
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *fishFlip;   // 每条鱼的朝向缓存
 @property (nonatomic, weak) UIView *gradientHost;       // 渐变挂在哪一层（玻璃 contentView / 材质层）
 @property (nonatomic, assign) float lastGradientAlpha;     // 渐变透明度缓存（避免重复写）
@@ -58,6 +58,9 @@ static CGFloat axs_glassify_notify_sCurveShape(CGFloat t) {
 @property (nonatomic, assign) CFTimeInterval lastLoadAttempt;  // 图片加载重试时间戳
 @property (nonatomic, assign) BOOL burstPlayed;
 @property (nonatomic, assign) CGFloat dragProgress;        // S 曲线滑动进度（-1…1，0 = 未拖动）
+@property (nonatomic, assign) NSUInteger styleGeneration;  // 样式上次应用时的配置代次
+@property (nonatomic, assign) CGSize styleSize;            // 上次应用时的卡片尺寸
+@property (nonatomic, assign) CGFloat styleSuperWidth;     // 上次应用时的父视图宽度
 @end
 @implementation AxsGlassifyNotifyEffect
 @end
@@ -371,6 +374,34 @@ static UIImageView *axs_glassify_notify_findIconView(UIView *view, int depth) {
     return nil;
 }
 
+// 热路径（布局 / 找背景层）：用 C 字符串比较，不建 NSString。
+static BOOL axs_glassify_notify_class_contains(UIView *view, const char *needle) {
+    const char *name = class_getName(object_getClass(view));
+    return name != NULL && strstr(name, needle) != NULL;
+}
+
+// 自定义鱼图按路径缓存：同一套图只从磁盘读一次，而不是每张通知各读一遍。
+static NSArray<UIImage *> *axs_glassify_notify_customFishImages(NSString *paths) {
+    static NSString *cachedPaths = nil;
+    static NSArray<UIImage *> *cachedImages = nil;
+    NSString *key = paths ?: @"";
+    if (cachedPaths != nil && [cachedPaths isEqualToString:key]) {
+        return cachedImages;
+    }
+    NSMutableArray<UIImage *> *images = [NSMutableArray array];
+    for (NSString *raw in [key componentsSeparatedByString:@";"]) {
+        NSString *trimmed = [raw stringByTrimmingCharactersInSet:
+                             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length == 0) continue;
+        UIImage *img = [UIImage imageWithContentsOfFile:trimmed];
+        if (img) [images addObject:img];
+        if (images.count >= 6) break;
+    }
+    cachedPaths = [key copy];
+    cachedImages = [images copy];
+    return cachedImages;
+}
+
 // 找通知的背景视图（毛玻璃/材质层）。圆角打在它身上而不是通知层，
 // 避免 masksToBounds 裁掉粒子（粒子要飘出通知边界）。
 static UIView *axs_glassify_notify_findBackgroundView(UIView *view, int depth) {
@@ -380,10 +411,11 @@ static UIView *axs_glassify_notify_findBackgroundView(UIView *view, int depth) {
         // 玻璃底板是合并后新增的背景层，圆角归 AxsGlassifyLiquid 管；
         // 这里跳过它，继续找卡片真正的材质层。
         if ([AxsGlassifyLiquid axs_glassify_isGlassView:sub]) continue;
-        NSString *cls = NSStringFromClass([sub class]);
         if ([sub isKindOfClass:[UIVisualEffectView class]]
-            || [cls containsString:@"WallpaperEffect"] || [cls containsString:@"Material"]
-            || [cls containsString:@"Backdrop"] || [cls containsString:@"Background"]) {
+            || axs_glassify_notify_class_contains(sub, "WallpaperEffect")
+            || axs_glassify_notify_class_contains(sub, "Material")
+            || axs_glassify_notify_class_contains(sub, "Backdrop")
+            || axs_glassify_notify_class_contains(sub, "Background")) {
             return sub;
         }
         UIView *deep = axs_glassify_notify_findBackgroundView(sub, depth + 1);
@@ -452,6 +484,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 - (BOOL)axs_glassify_notify_needsTicking;
 - (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt offsetX:(CGFloat)offsetX toView:(UIView *)view;
 - (void)axs_glassify_notify_quiesce;
+- (void)axs_glassify_notify_ensureFishForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
+- (void)axs_glassify_notify_ensureBurstForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
+- (void)axs_glassify_notify_ensureSeasonForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
 @end
 
 @implementation AxsGlassifyNotifyAnimator
@@ -530,87 +565,30 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     effect.gradient = gradient;
     axs_glassify_notify_attachGradient(effect, axs_glassify_notify_gradientHost(view), radius);
 
-    // 鱼缸游鱼：自定义图片优先（多张 ; 分隔轮流），否则手绘 5 色小鱼。
+    // 鱼缸 / 爆发 / 粒子层按需创建：默认配置下这些效果全关。
+    // 以前每张通知都白建 8 个鱼层 + 2 个发射器、同步读 PNG（滚动列表时全在主线程）。
     effect.fishLayers = [NSMutableArray array];
     effect.fishNextBubble = [NSMutableArray array];
     effect.fishFlip = [NSMutableArray array];
     effect.fishSeed = (double)arc4random_uniform(10000) / 100.0;   // 随机相位：各通知鱼游互不同步
     effect.particleJitter = 0.85 + ((double)arc4random() / UINT32_MAX) * 0.5;   // 发射率抖动 ±25%
     effect.chargeNext = 1.0;
-    // 加载自定义鱼图（最多 6 张）。
-    NSMutableArray<UIImage *> *customFish = [NSMutableArray array];
-    for (NSString *raw in [[config axs_glassify_notify_fishPng] componentsSeparatedByString:@";"]) {
-        NSString *p = [raw stringByTrimmingCharactersInSet:
-                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (p.length == 0) continue;
-        UIImage *img = [UIImage imageWithContentsOfFile:p];
-        if (img) [customFish addObject:img];
-        if (customFish.count >= 6) break;
-    }
-    for (NSInteger i = 0; i < 8; i++) {
-        CALayer *fish = [CALayer layer];
-        fish.opacity = 0;
-        fish.zPosition = 6;   // 背景之上、渐变之下
-        [view.layer addSublayer:fish];
-        [effect.fishLayers addObject:fish];
-        // 自定义图优先，否则手绘小鱼；sprite 高分辨率渲染，显示大小由 bounds + fish_size 控制。
-        UIImage *img = customFish.count > 0
-            ? customFish[(NSUInteger)i % customFish.count]
-            : axs_glassify_notify_fishSprite((NSUInteger)i);
-        fish.contents = (__bridge id)img.CGImage;
-        [effect.fishNextBubble addObject:@(1.0 + (i % 5) * 0.6 + ((double)arc4random() / UINT32_MAX) * 1.5)];
-        [effect.fishFlip addObject:@NO];
-    }
-
-    // 应用图标取色（按 App 专属渐变色，attach 采样一次）。
-    UIImageView *iconView = axs_glassify_notify_findIconView(view, 0);
-    effect.iconColor = iconView.image ? [iconView.image axs_glassify_notify_averageColor] : nil;
-    effect.iconView = iconView;
-    effect.titleLabel = axs_glassify_notify_findTitleLabel(view, 0);
-
-    // 到达粒子爆发层（新通知瞬间光斑飞溅）。
-    CAEmitterLayer *burst = [CAEmitterLayer layer];
-    burst.frame = view.bounds;
-    burst.emitterPosition = CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds));
-    burst.emitterSize = CGSizeMake(6, 6);
-    burst.emitterShape = kCAEmitterLayerRectangle;
-    burst.renderMode = kCAEmitterLayerAdditive;
-    burst.opacity = 0;
-    // 爆发 sprite：从文件导入（burst_png），找不到回退白色光点。
-    UIImage *burstSprite = nil;
-    NSString *burstPath = [config axs_glassify_notify_burstPng];
-    if (burstPath.length > 0) {
-        burstSprite = [UIImage imageWithContentsOfFile:burstPath];
-    }
-    if (!burstSprite) {
-        burstSprite = axs_glassify_notify_defaultBurstSprite();
-    }
-    CAEmitterCell *bCell = [CAEmitterCell emitterCell];
-    bCell.contents = (__bridge id)burstSprite.CGImage;
-    bCell.birthRate = 26.0;
-    bCell.lifetime = 1.0;
-    bCell.velocity = 110.0;
-    bCell.velocityRange = 55.0;
-    bCell.emissionRange = M_PI * 2;
-    bCell.scale = burstPath.length > 0 ? 0.55f : 0.35f;
-    bCell.scaleRange = 0.2;
-    bCell.alphaSpeed = -1.2;
-    burst.emitterCells = @[bCell];
-    [view.layer addSublayer:burst];
-    effect.burst = burst;
-    effect.burstPlayed = NO;
-
-    // 季节粒子层（飘落 emoji）。
-    CAEmitterLayer *season = [CAEmitterLayer layer];
-    season.frame = view.bounds;
-    season.emitterPosition = CGPointMake(CGRectGetMidX(view.bounds), -6.0);
-    season.emitterSize = CGSizeMake(view.bounds.size.width, 3.0);
-    season.emitterShape = kCAEmitterLayerLine;
-    season.renderMode = kCAEmitterLayerUnordered;
-    season.opacity = 0;
-    [view.layer addSublayer:season];
-    effect.season = season;
     effect.lastParticleKey = -1;
+    effect.burstPlayed = NO;
+    if ([config axs_glassify_notify_fishOn]) {
+        [self axs_glassify_notify_ensureFishForEffect:effect view:view];
+    }
+    if ([config axs_glassify_notify_burstOn]) {
+        [self axs_glassify_notify_ensureBurstForEffect:effect view:view];
+    }
+
+    // 图标取色只在「跟随应用图标」时需要：16×16 位图采样不必每张卡都画一次。
+    UIImageView *iconView = axs_glassify_notify_findIconView(view, 0);
+    effect.iconView = iconView;
+    if (iconView.image && [config axs_glassify_notify_colorSource] == 1) {
+        effect.iconColor = [iconView.image axs_glassify_notify_averageColor];
+    }
+    effect.titleLabel = axs_glassify_notify_findTitleLabel(view, 0);
 
     [self.effects addObject:effect];
 
@@ -707,6 +685,80 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     }
 }
 
+#pragma mark - 按需创建效果层
+
+- (void)axs_glassify_notify_ensureFishForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view {
+    if (!e || !view || e.fishLayers.count > 0) return;
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    NSArray<UIImage *> *customFish = axs_glassify_notify_customFishImages([config axs_glassify_notify_fishPng]);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (NSInteger i = 0; i < 8; i++) {
+        CALayer *fish = [CALayer layer];
+        fish.opacity = 0;
+        fish.zPosition = 6;   // 背景之上、渐变之下
+        [view.layer addSublayer:fish];
+        [e.fishLayers addObject:fish];
+        // 自定义图优先，否则手绘小鱼；sprite 高分辨率渲染，显示大小由 bounds + fish_size 控制。
+        UIImage *img = customFish.count > 0
+            ? customFish[(NSUInteger)i % customFish.count]
+            : axs_glassify_notify_fishSprite((NSUInteger)i);
+        fish.contents = (__bridge id)img.CGImage;
+        [e.fishNextBubble addObject:@(1.0 + (i % 5) * 0.6 + ((double)arc4random() / UINT32_MAX) * 1.5)];
+        [e.fishFlip addObject:@NO];
+    }
+    [CATransaction commit];
+}
+
+- (void)axs_glassify_notify_ensureBurstForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view {
+    if (!e || !view || e.burst) return;
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    // 到达粒子爆发层（新通知瞬间光斑飞溅）。
+    CAEmitterLayer *burst = [CAEmitterLayer layer];
+    burst.frame = view.bounds;
+    burst.emitterPosition = CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds));
+    burst.emitterSize = CGSizeMake(6, 6);
+    burst.emitterShape = kCAEmitterLayerRectangle;
+    burst.renderMode = kCAEmitterLayerAdditive;
+    burst.opacity = 0;
+    // 爆发 sprite：从文件导入（burst_png），找不到回退白色光点。
+    UIImage *burstSprite = nil;
+    NSString *burstPath = [config axs_glassify_notify_burstPng];
+    if (burstPath.length > 0) {
+        burstSprite = [UIImage imageWithContentsOfFile:burstPath];
+    }
+    if (!burstSprite) {
+        burstSprite = axs_glassify_notify_defaultBurstSprite();
+    }
+    CAEmitterCell *bCell = [CAEmitterCell emitterCell];
+    bCell.contents = (__bridge id)burstSprite.CGImage;
+    bCell.birthRate = 26.0;
+    bCell.lifetime = 1.0;
+    bCell.velocity = 110.0;
+    bCell.velocityRange = 55.0;
+    bCell.emissionRange = M_PI * 2;
+    bCell.scale = burstPath.length > 0 ? 0.55f : 0.35f;
+    bCell.scaleRange = 0.2;
+    bCell.alphaSpeed = -1.2;
+    burst.emitterCells = @[bCell];
+    [view.layer addSublayer:burst];
+    e.burst = burst;
+}
+
+- (void)axs_glassify_notify_ensureSeasonForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view {
+    if (!e || !view || e.season) return;
+    CAEmitterLayer *season = [CAEmitterLayer layer];
+    season.frame = view.bounds;
+    season.emitterPosition = CGPointMake(CGRectGetMidX(view.bounds), -6.0);
+    season.emitterSize = CGSizeMake(view.bounds.size.width, 3.0);
+    season.emitterShape = kCAEmitterLayerLine;
+    season.renderMode = kCAEmitterLayerUnordered;
+    season.opacity = 0;
+    [view.layer addSublayer:season];
+    e.season = season;
+    e.lastParticleKey = -1;
+}
+
 // 玻璃底板装上 / 拆掉后，把渐变层搬到正确层级。
 - (void)axs_glassify_notify_rehostGradientForView:(UIView *)view {
     if (!view) return;
@@ -736,32 +788,6 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     [self axs_glassify_notify_updateLink];
 }
 
-// 样式签名：样式参数与尺寸未变时，refresh 整段跳过（滚动时 layoutSubviews 高频触发）。
-static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *config, UIView *v) {
-    NSUInteger sig = (NSUInteger)(v.bounds.size.width) * 1000 + (NSUInteger)(v.bounds.size.height);
-    double vals[] = {
-        [config axs_glassify_notify_notifyScale],
-        [config axs_glassify_notify_titleHue],
-        [config axs_glassify_notify_titleGlow],
-        [config axs_glassify_notify_iconCorner],
-        [config axs_glassify_notify_iconScale],
-        [config axs_glassify_notify_iconGlow],
-        [config axs_glassify_notify_cornerRadius],
-        [config axs_glassify_notify_notifyOpacity],
-        [config axs_glassify_notify_shadowIntensity],
-        [config axs_glassify_notify_tiltIntensity],
-        [config axs_glassify_notify_notifyWidth],
-    };
-    for (size_t i = 0; i < sizeof(vals) / sizeof(vals[0]); i++) {
-        sig = sig * 31 + (NSUInteger)(long)(vals[i] * 500.0);
-    }
-    sig = sig * 31 + ([config axs_glassify_notify_titleColorOn] ? 1u : 0u);
-    if (v.superview) {
-        sig = sig * 31 + (NSUInteger)(v.superview.bounds.size.width);
-    }
-    return sig;
-}
-
 - (void)axs_glassify_notify_refreshForView:(UIView *)view {
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     if (![config axs_glassify_notify_isEnabled]) return;
@@ -776,10 +802,19 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
                                      offsetX:e.dragProgress
                                              * (CGFloat)[config axs_glassify_notify_sCurveAmp]
                                       toView:v];
-        // 样式签名记忆：参数/尺寸没变就不碰任何属性。
-        NSUInteger sig = axs_glassify_notify_styleSignature(config, v);
-        if (sig == e.styleSignature) return;
-        e.styleSignature = sig;
+        // 配置代次 + 卡片尺寸 + 父视图宽度都没变就直接返回。
+        // 以前这里每次都要读 11 个配置键做“签名”，而 -layoutSubviews 在滚动时对每张卡都会触发。
+        NSUInteger generation = [config axs_glassify_notify_generation];
+        CGSize cardSize = v.bounds.size;
+        CGFloat superWidth = v.superview ? v.superview.bounds.size.width : 0.0;
+        if (generation == e.styleGeneration &&
+            CGSizeEqualToSize(cardSize, e.styleSize) &&
+            fabs(e.styleSuperWidth - superWidth) < 0.5) {
+            return;
+        }
+        e.styleGeneration = generation;
+        e.styleSize = cardSize;
+        e.styleSuperWidth = superWidth;
 
         // ── 布局光影：宽度 / 圆角 / 透明度 / 投影 ──
         double wFrac = [config axs_glassify_notify_notifyWidth];
@@ -1209,6 +1244,10 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
             e.gradient.endPoint = CGPointMake(0.5 - 0.5 * cos(ang), 0.5 - 0.5 * sin(ang));
             // 颜色/位点需要分配 NSArray/UIColor —— 降到 10Hz（色带推移肉眼仍顺滑）。
             if (slowTick) {
+                // 切到「跟随应用图标」后补一次采样（attach 时只在已选该模式才采）。
+                if (colorSource == 1 && !e.iconColor && e.iconView.image) {
+                    e.iconColor = [e.iconView.image axs_glassify_notify_averageColor];
+                }
                 UIColor *c1, *c2, *cm;
                 if (colorSource == 1 && e.iconColor) {
                     // 应用图标取色：同色系微漂移（每条通知专属色）。
@@ -1243,6 +1282,10 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
 
         // 鱼缸游鱼：前 fish_count 条可见，正弦游动 + 方向翻转（数量/大小实时生效）。
         if (fishOn) {
+            // 首次打开游鱼时按需建层（默认配置下 attach 不建这些层）。
+            if (e.fishLayers.count == 0) {
+                [self axs_glassify_notify_ensureFishForEffect:e view:v];
+            }
             double fishCountD = (double)fishCount;
             for (NSInteger fi = 0; fi < (NSInteger)e.fishLayers.count; fi++) {
                 CALayer *fish = e.fishLayers[(NSUInteger)fi];
@@ -1378,6 +1421,9 @@ static NSUInteger axs_glassify_notify_styleSignature(AxsGlassifyNotifyConfig *co
 
         // 粒子特效（图片文件导入）：几何/参数降到 3Hz 同步（分配与 emitter 写入大头）。
         if (particleOn) {
+            if (!e.season) {
+                [self axs_glassify_notify_ensureSeasonForEffect:e view:v];
+            }
             if (e.season.opacity != 0.85f) e.season.opacity = 0.85f;
             if (paramTick) {
                 e.season.frame = v.bounds;

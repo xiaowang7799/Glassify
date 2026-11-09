@@ -63,7 +63,7 @@ static NSString *axs_glassify_legacyPreferencesPath(void) {
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
     if (key.length == 0) return nil;
-    return axs_glassify_readPreferences()[key] ?: [specifier propertyForKey:@"default"];
+    return axs_glassify_cachedPreferences()[key] ?: [specifier propertyForKey:@"default"];
 }
 
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
