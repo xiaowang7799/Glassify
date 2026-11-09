@@ -66,18 +66,70 @@ static NSString *axs_glassify_legacyPreferencesPath(void) {
     return axs_glassify_cachedPreferences()[key] ?: [specifier propertyForKey:@"default"];
 }
 
+- (void)axs_glassify_presentWriteError:(NSError *)error {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"设置未保存"
+        message:error.localizedDescription ?: @"请检查配置文件路径和写入权限。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
     if (key.length == 0) return;
     NSError *error = nil;
     if (!axs_glassify_writePreference(key, value, &error)) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"设置未保存"
-            message:error.localizedDescription ?: @"请检查配置文件路径和写入权限。"
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
+        [self axs_glassify_presentWriteError:error];
         [self reloadSpecifiers];
     }
+}
+
+#pragma mark - 快捷方案（一次写多个键，只重写文件 / 广播一次）
+
+- (void)axs_glassify_applyQuickScheme:(NSDictionary *)values {
+    NSError *error = nil;
+    if (!axs_glassify_writePreferences(values, &error)) {
+        [self axs_glassify_presentWriteError:error];
+        return;
+    }
+    [self reloadSpecifiers];
+}
+
+// 省电：只留玻璃本体，所有逐帧特效关掉，低电量自动降载保持开启。
+- (void)axs_glassify_applyPowerSaver:(id)sender {
+    [self axs_glassify_applyQuickScheme:@{
+        @"gradient_on": @NO,
+        @"fish_on": @NO,
+        @"particle_on": @NO,
+        @"charge_fx": @NO,
+        @"burst_on": @NO,
+        @"dissolve_on": @NO,
+        @"touch_glow_on": @NO,
+        @"motion_highlight": @NO,
+        @"low_power_guard": @YES,
+    }];
+}
+
+// 炫酷：渐变 + 游鱼 + 到达爆发 + 拖动 S 曲线 + 轻倾斜，都取中间值，避免一上来就拉满。
+- (void)axs_glassify_applyShowcase:(id)sender {
+    [self axs_glassify_applyQuickScheme:@{
+        @"gradient_on": @YES,
+        @"gradient_opacity": @0.35,
+        @"gradient_speed": @0.30,
+        @"fish_on": @YES,
+        @"fish_count": @3,
+        @"fish_size": @1.0,
+        @"burst_on": @YES,
+        @"burst_intensity": @1.0,
+        @"dissolve_on": @YES,
+        @"touch_glow_on": @YES,
+        @"touch_haptic": @YES,
+        @"s_curve_amp": @35,
+        @"corner_radius": @22,
+        @"tilt_intensity": @0.40,
+        @"icon_glow": @0.60,
+        @"low_power_guard": @YES,
+    }];
 }
 
 #pragma mark - 滑条
@@ -184,12 +236,12 @@ static NSArray<NSString *> *axs_glassify_presetKeys(void) {
             style:UIAlertActionStyleDefault handler:^(UIAlertAction *act) {
             NSDictionary *settings = [preset objectForKey:@"settings"];
             if ([settings isKindOfClass:[NSDictionary class]]) {
-                NSError *error = nil;
+                NSMutableDictionary *values = [NSMutableDictionary dictionary];
                 for (NSString *key in axs_glassify_presetKeys()) {
                     id v = settings[key];
-                    if (v) axs_glassify_writePreference(key, v, &error);
+                    if (v) values[key] = v;
                 }
-                [self reloadSpecifiers];
+                [self axs_glassify_applyQuickScheme:values];
             }
         }]];
         [sheet addAction:[UIAlertAction actionWithTitle:[@"删除：" stringByAppendingString:name]

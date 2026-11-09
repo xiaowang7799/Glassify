@@ -41,9 +41,11 @@ static inline NSDictionary *axs_glassify_cachedPreferences(void) {
 }
 
 // The PreferenceBundle is the only caller allowed to write.
-static inline BOOL axs_glassify_writePreference(NSString *key, id value, NSError **error) {
+// 批量写：预设、快捷方案一次要改十几个键，逐键写会重写文件并广播十几次。
+// values 里的 NSNull 表示删除该键。
+static inline BOOL axs_glassify_writePreferences(NSDictionary *values, NSError **error) {
     NSString *path = axs_glassify_preferencesPath();
-    if (key.length == 0 || path.length == 0) {
+    if (values.count == 0 || path.length == 0) {
         if (error) {
             *error = [NSError errorWithDomain:AxsGlassifyPreferencesDomain code:1
                                     userInfo:@{NSLocalizedDescriptionKey: @"Invalid preference path or key"}];
@@ -51,7 +53,7 @@ static inline BOOL axs_glassify_writePreference(NSString *key, id value, NSError
         return NO;
     }
     NSFileManager *manager = [NSFileManager defaultManager];
-    NSMutableDictionary *values;
+    NSMutableDictionary *merged;
     if ([manager fileExistsAtPath:path]) {
         NSData *existing = [NSData dataWithContentsOfFile:path options:0 error:error];
         id decoded = existing ? [NSPropertyListSerialization propertyListWithData:existing
@@ -63,26 +65,44 @@ static inline BOOL axs_glassify_writePreference(NSString *key, id value, NSError
             }
             return NO;
         }
-        values = [decoded mutableCopy];
+        merged = [decoded mutableCopy];
     } else {
-        values = [axs_glassify_readPreferences() mutableCopy];
+        merged = [axs_glassify_readPreferences() mutableCopy];
     }
-    if (value) values[key] = value;
-    else [values removeObjectForKey:key];
+    for (id key in values) {
+        if (![key isKindOfClass:[NSString class]]) continue;
+        id value = values[key];
+        if (value == [NSNull null]) {
+            [merged removeObjectForKey:key];
+        } else if (value) {
+            merged[key] = value;
+        }
+    }
     if (![manager createDirectoryAtPath:[path stringByDeletingLastPathComponent]
             withIntermediateDirectories:YES attributes:nil error:error]) {
         return NO;
     }
-    NSData *data = [NSPropertyListSerialization dataWithPropertyList:values
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:merged
                          format:NSPropertyListBinaryFormat_v1_0 options:0 error:error];
     if (!data || ![data writeToFile:path options:NSDataWritingAtomic error:error]) {
         return NO;
     }
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:AxsGlassifyPreferencesDomain];
     // Mirror the whole snapshot so cfprefsd cannot flush stale unrelated keys.
-    [defaults setPersistentDomain:values forName:AxsGlassifyPreferencesDomain];
+    [defaults setPersistentDomain:merged forName:AxsGlassifyPreferencesDomain];
     [defaults synchronize];
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge CFStringRef)AxsGlassifyPreferencesChanged, NULL, NULL, true);
     return YES;
+}
+
+static inline BOOL axs_glassify_writePreference(NSString *key, id value, NSError **error) {
+    if (key.length == 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:AxsGlassifyPreferencesDomain code:1
+                                    userInfo:@{NSLocalizedDescriptionKey: @"Invalid preference path or key"}];
+        }
+        return NO;
+    }
+    return axs_glassify_writePreferences(@{key: value ?: [NSNull null]}, error);
 }

@@ -11,6 +11,8 @@ NSString * const AxsGlassifyPlatterGlassChanged = @"com.axs.glassify.platter-gla
 static const void *kAxsGlassifyPlatterStateKey = &kAxsGlassifyPlatterStateKey;
 static NSString * const kAxsGlassifyPlatterHighlightName = @"AxsGlassifyPlatterHighlight";
 static NSString * const kAxsGlassifyPlatterFringeName = @"AxsGlassifyPlatterFringe";
+static NSString * const kAxsGlassifyPlatterTopShadeName = @"AxsGlassifyPlatterTopShade";
+static const void *kAxsGlassifyTopShadeKey = &kAxsGlassifyTopShadeKey;
 
 @interface AxsGlassifyPlatterState : NSObject
 @property (nonatomic, strong) UIVisualEffectView *glassView;
@@ -269,6 +271,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     double strength = axs_glassify_liquid_strength();
     BOOL dark = axs_glassify_liquid_dark();
 
+    BOOL installedGlass = NO;
     UIVisualEffectView *glass = state.glassView;
     if (!glass) {
         glass = [[UIVisualEffectView alloc] initWithEffect:nil];
@@ -281,6 +284,7 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         // Behind the label/icon content, in front of the (now hidden) backdrop.
         [platter insertSubview:glass atIndex:0];
         state.glassView = glass;
+        installedGlass = YES;
         // 渐变层要重新挂到 contentView（玻璃之上、文字之下）。
         [[NSNotificationCenter defaultCenter] postNotificationName:AxsGlassifyPlatterGlassChanged
                                                             object:platter];
@@ -318,6 +322,34 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
         state.cornerRadius = radius;
         state.lastBoundsSize = bounds.size;
         [self axs_glassify_decorateGlassView:glass radius:radius];
+    }
+
+    // 深色（强制深色或系统深色）时给玻璃加顶部内阴影；浅色下完全隐藏。
+    CAGradientLayer *topShade = objc_getAssociatedObject(glass, kAxsGlassifyTopShadeKey);
+    if (topShade) {
+        BOOL systemDark = NO;
+        if (@available(iOS 12.0, *)) {
+            systemDark = (platter.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+        }
+        float shadeWant = (dark || systemDark) ? 1.0f : 0.0f;
+        if (topShade.opacity != shadeWant) {
+            topShade.opacity = shadeWant;
+        }
+    }
+
+    // 玻璃底板第一次装上时“长出来”：轻微放大 + 淡入，避免硬切。
+    if (installedGlass) {
+        glass.alpha = 0.0;
+        CABasicAnimation *stage = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
+        stage.fromValue = @(0.97);
+        stage.toValue = @(1.0);
+        stage.duration = 0.34;
+        stage.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+        [glass.layer addAnimation:stage forKey:@"axs_glass_stage"];
+        [UIView animateWithDuration:0.28 delay:0.0 options:UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+                             glass.alpha = 1.0;
+                         } completion:nil];
     }
 
     [axs_glassify_platter_registry() addObject:platter];
@@ -377,6 +409,9 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
 
     CAGradientLayer *highlight = axs_glassify_gradient_layer(host, kAxsGlassifyPlatterHighlightName);
     CAGradientLayer *fringe = axs_glassify_gradient_layer(host, kAxsGlassifyPlatterFringeName);
+    CAGradientLayer *shade = axs_glassify_gradient_layer(host, kAxsGlassifyPlatterTopShadeName);
+    objc_setAssociatedObject(glass, kAxsGlassifyTopShadeKey, shade,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -406,6 +441,19 @@ static CAGradientLayer *axs_glassify_gradient_layer(CALayer *host, NSString *nam
     fringe.cornerRadius = radius;
     fringe.masksToBounds = YES;
     fringe.zPosition = 998.0;
+
+    // 顶部内阴影（深色下显示）：玻璃上缘压一道暗边，看起来有厚度。
+    shade.frame = CGRectMake(0.0, 0.0, bounds.size.width, bounds.size.height * 0.42);
+    shade.colors = @[(id)[UIColor colorWithWhite:0.0 alpha:0.34].CGColor,
+                     (id)[UIColor colorWithWhite:0.0 alpha:0.10].CGColor,
+                     (id)[UIColor clearColor].CGColor];
+    shade.locations = @[@0.0, @0.45, @1.0];
+    shade.startPoint = CGPointMake(0.5, 0.0);
+    shade.endPoint = CGPointMake(0.5, 1.0);
+    shade.cornerRadius = radius;
+    shade.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    shade.masksToBounds = YES;
+    shade.zPosition = 997.0;
 
     [CATransaction commit];
 }

@@ -61,6 +61,7 @@ static CGFloat axs_glassify_notify_sCurveShape(CGFloat t) {
 @property (nonatomic, assign) CFTimeInterval lastLoadAttempt;  // 图片加载重试时间戳
 @property (nonatomic, assign) BOOL burstPlayed;
 @property (nonatomic, assign) CGFloat dragProgress;        // S 曲线滑动进度（-1…1，0 = 未拖动）
+@property (nonatomic, strong) CAGradientLayer *dragGlow;   // 拖动时的边缘色散光（静止不可见）
 @property (nonatomic, assign) NSUInteger styleGeneration;  // 样式上次应用时的配置代次
 @property (nonatomic, assign) CGSize styleSize;            // 上次应用时的卡片尺寸
 @property (nonatomic, assign) CGFloat styleSuperWidth;     // 上次应用时的父视图宽度
@@ -492,6 +493,7 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 - (void)axs_glassify_notify_ensureBurstForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
 - (void)axs_glassify_notify_ensureSeasonForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
 - (void)axs_glassify_notify_installDragGestureOnView:(UIView *)view;
+- (void)axs_glassify_notify_ensureDragGlowForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
 - (void)axs_glassify_notify_handlePan:(UIPanGestureRecognizer *)pan;
 - (void)axs_glassify_notify_beginDragForView:(UIView *)view;
 @end
@@ -595,7 +597,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     // 图标取色只在「跟随应用图标」时需要：16×16 位图采样不必每张卡都画一次。
     UIImageView *iconView = axs_glassify_notify_findIconView(view, 0);
     effect.iconView = iconView;
-    if (iconView.image && [config axs_glassify_notify_colorSource] == 1) {
+    // 跟随图标配色、或开了图标光晕（光晕用图标主色）时才需要采样。
+    if (iconView.image && ([config axs_glassify_notify_colorSource] == 1 ||
+                           [config axs_glassify_notify_iconGlow] > 0.001)) {
         effect.iconColor = [iconView.image axs_glassify_notify_averageColor];
     }
     effect.titleLabel = axs_glassify_notify_findTitleLabel(view, 0);
@@ -753,6 +757,32 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 
 #pragma mark - 按需创建效果层
 
+// 拖动时的边缘色散：平时 opacity 为 0（不影响静止观感），
+// 拖动中按摆幅比例亮起，松手淡出。放在卡片图层最上层，只描边不挡文字。
+- (void)axs_glassify_notify_ensureDragGlowForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view {
+    if (!e || !view || e.dragGlow) return;
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    double configured = [config axs_glassify_notify_cornerRadius];
+    CGFloat radius = configured > 0.5 ? (CGFloat)configured
+                                      : (view.layer.cornerRadius > 0 ? view.layer.cornerRadius : 24.0);
+    CAGradientLayer *glow = [CAGradientLayer layer];
+    glow.name = @"AxsGlassifyDragGlow";
+    glow.startPoint = CGPointMake(0.0, 0.5);
+    glow.endPoint = CGPointMake(1.0, 0.5);
+    glow.colors = @[(id)[UIColor colorWithRed:0.35 green:0.85 blue:1.0 alpha:0.50].CGColor,
+                    (id)[UIColor clearColor].CGColor,
+                    (id)[UIColor clearColor].CGColor,
+                    (id)[UIColor colorWithRed:1.0 green:0.45 blue:0.85 alpha:0.50].CGColor];
+    glow.locations = @[@0.0, @0.07, @0.93, @1.0];
+    glow.cornerRadius = radius;
+    glow.masksToBounds = YES;
+    glow.opacity = 0.0f;
+    glow.zPosition = 1001.0;
+    glow.frame = view.bounds;
+    [view.layer addSublayer:glow];
+    e.dragGlow = glow;
+}
+
 - (void)axs_glassify_notify_ensureFishForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view {
     if (!e || !view || e.fishLayers.count > 0) return;
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
@@ -848,6 +878,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
             [e.burst removeFromSuperlayer];
             [e.season removeFromSuperlayer];
             [e.iconGlow removeFromSuperlayer];
+            [e.dragGlow removeFromSuperlayer];
             [self.effects removeObjectAtIndex:(NSUInteger)i];
         }
     }
@@ -969,6 +1000,10 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
             double isc = [config axs_glassify_notify_iconScale];
             iv.layer.transform = CATransform3DMakeScale((CGFloat)isc, (CGFloat)isc, 1.0);
             double ig = [config axs_glassify_notify_iconGlow];
+            if (ig > 0 && !e.iconColor && iv.image) {
+                // 中途打开图标光晕时补一次主色采样（只在布局时发生一次）。
+                e.iconColor = [iv.image axs_glassify_notify_averageColor];
+            }
             if (ig > 0 && iv.superview) {
                 if (!e.iconGlow) {
                     CAGradientLayer *glowL = [CAGradientLayer layer];
@@ -1031,7 +1066,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         [CATransaction setDisableActions:YES];
         e.gradient.position = CGPointMake(CGRectGetMidX(view.bounds),
                                           CGRectGetMidY(view.bounds) + clamped);
-        // S 曲线滑动：把纵向拖动量归一化成 t(-1…1)，经三次贝塞尔 s 形映射后驱动横向位移。
+        // S 曲线滑动：把纵向位移归一化成进度，经 S 形映射后驱动横向位移（并带一点倾转）。
         // amp = 0 时保持原有行为（transform 由缩放/倾斜单独负责，这里不动）。
         if (amp > 0) {
             // 满幅 = 一张卡片的高度（太矮的卡片给 70pt 下限）：拖出一张卡的距离就到最大摆幅。
@@ -1042,6 +1077,12 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
                                             tilt:[config axs_glassify_notify_tiltIntensity]
                                          offsetX:e.dragProgress * amp
                                           toView:view];
+            // 边缘色散随摆幅增强：|拖拽进度| 本来就已经是一 0…1 的比例。
+            [self axs_glassify_notify_ensureDragGlowForEffect:e view:view];
+            if (e.dragGlow) {
+                e.dragGlow.frame = view.bounds;
+                e.dragGlow.opacity = (float)(fabs(e.dragProgress) * 0.85);
+            }
         }
         [CATransaction commit];
         return;
@@ -1067,22 +1108,32 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         back.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
         [e.gradient addAnimation:back forKey:@"axs_drag_back"];
         // S 曲线回位：沿同一条曲线反向滑回原点，用 keyframe 采样保持轨迹形状。
+        if (e.dragGlow && e.dragGlow.opacity > 0.001f) {
+            CABasicAnimation *glowOut = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            glowOut.fromValue = @(e.dragGlow.opacity);
+            glowOut.toValue = @0.0;
+            glowOut.duration = 0.28;
+            [e.dragGlow addAnimation:glowOut forKey:@"axs_drag_glow_out"];
+            e.dragGlow.opacity = 0.0f;
+        }
         if (amp > 0 && fabs(startProgress) > 0.002) {
             CAKeyframeAnimation *slideBack = [CAKeyframeAnimation animationWithKeyPath:@"transform"];
             NSMutableArray *values = [NSMutableArray array];
             NSMutableArray *keyTimes = [NSMutableArray array];
-            for (NSInteger i = 0; i <= 12; i++) {
-                float k = (float)i / 12.0f;
-                float eased = 1.0f - k * k;               // easeOut 采样
+            double tilt = [config axs_glassify_notify_tiltIntensity];
+            double scale = [config axs_glassify_notify_notifyScale];
+            for (NSInteger i = 0; i <= 16; i++) {
+                float k = (float)i / 16.0f;
+                // 阻尼弹簧：回中心时轻微过冲（约 6%）再归零，比纯 ease-out 更像液态。
+                float eased = expf(-5.5f * k) * cosf(2.0f * (float)M_PI * 0.85f * k);
                 CGFloat off = (CGFloat)eased * startProgress * amp;
                 CATransform3D tf = CATransform3DIdentity;
-                double tilt = [config axs_glassify_notify_tiltIntensity];
                 if (tilt > 0) {
                     tf.m34 = -1.0f / 500.0f;
                     tf = CATransform3DRotate(tf, (CGFloat)(0.10 * tilt), 1, 0, 0);
                 }
-                tf = CATransform3DScale(tf, (CGFloat)[config axs_glassify_notify_notifyScale],
-                                        (CGFloat)[config axs_glassify_notify_notifyScale], 1.0);
+                tf = CATransform3DScale(tf, (CGFloat)scale, (CGFloat)scale, 1.0);
+                tf = CATransform3DRotate(tf, off * 0.00116f, 0, 0, 1);
                 tf = CATransform3DTranslate(tf, off, 0, 0);
                 [values addObject:[NSValue valueWithCATransform3D:tf]];
                 [keyTimes addObject:@(k)];
@@ -1213,6 +1264,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     }
     desired = CATransform3DScale(desired, (CGFloat)scale, (CGFloat)scale, 1.0);
     if (offsetX != 0) {
+        // 横向位移时带一点倾转（60pt ≈ 4°），摆动看起来是“甩”而不是平移。
+        desired = CATransform3DRotate(desired, offsetX * 0.00116f, 0, 0, 1);
         desired = CATransform3DTranslate(desired, offsetX, 0, 0);
     }
     if (!CATransform3DEqualToTransform(view.layer.transform, desired)) {
@@ -1293,6 +1346,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
             [e.burst removeFromSuperlayer];
             [e.season removeFromSuperlayer];
             [e.iconGlow removeFromSuperlayer];
+            [e.dragGlow removeFromSuperlayer];
             [self.effects removeObjectAtIndex:(NSUInteger)i];
             continue;
         }
