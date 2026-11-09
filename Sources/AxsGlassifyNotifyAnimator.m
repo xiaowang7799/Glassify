@@ -10,6 +10,8 @@
 
 // 视图是否已播过入场/爆发（滚动复用不重播）。
 static const void *kAxsLiquidSeenKey = &kAxsLiquidSeenKey;
+// 标记卡片上已挂过我们的拖动手势，避免重复添加。
+static const void *kAxsGlassifyNotifyPanKey = &kAxsGlassifyNotifyPanKey;
 
 // 触摸反馈：轻段触感，节流 0.2s（连点不刷屏）。
 static void axs_glassify_notify_haptic(BOOL enabled) {
@@ -471,8 +473,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     return best;
 }
 
-@interface AxsGlassifyNotifyAnimator ()
+@interface AxsGlassifyNotifyAnimator () <UIGestureRecognizerDelegate>
 @property (nonatomic, strong) NSMutableArray<AxsGlassifyNotifyEffect *> *effects;
+@property (nonatomic, assign) NSUInteger activeDrags;        // 正在拖动的卡片数（拖动中保持 tick）
 @property (nonatomic, strong) CADisplayLink *link;
 @property (nonatomic, assign) CFTimeInterval phase;
 @property (nonatomic, assign) NSUInteger frameCounter;   // 帧计数（降频更新用）
@@ -487,6 +490,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 - (void)axs_glassify_notify_ensureFishForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
 - (void)axs_glassify_notify_ensureBurstForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
 - (void)axs_glassify_notify_ensureSeasonForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view;
+- (void)axs_glassify_notify_installDragGestureOnView:(UIView *)view;
+- (void)axs_glassify_notify_handlePan:(UIPanGestureRecognizer *)pan;
+- (void)axs_glassify_notify_beginDragForView:(UIView *)view;
 @end
 
 @implementation AxsGlassifyNotifyAnimator
@@ -551,6 +557,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
             return;
         }
     }
+
+    // 拖动靠独立的手势识别器驱动（touchesMoved 会被列表的滚动手势取消）。
+    [self axs_glassify_notify_installDragGestureOnView:view];
 
     AxsGlassifyNotifyEffect *effect = [[AxsGlassifyNotifyEffect alloc] init];
     effect.view = view;
@@ -685,6 +694,62 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     }
 }
 
+#pragma mark - 拖动（UIPanGestureRecognizer，不再依赖 touchesMoved）
+
+// 通知列表本身就是 UIScrollView：它一开始滚动就会给卡片发 touchesCancelled，
+// 用 -touchesMoved: 只能拿到开头十几点位移，S 曲线看起来就像“没反应”。
+// 独立的手势识别器不受触摸取消影响，并且能显式跟系统的滚动 / 划走手势并行。
+- (void)axs_glassify_notify_installDragGestureOnView:(UIView *)view {
+    if (!view) return;
+    if (objc_getAssociatedObject(view, kAxsGlassifyNotifyPanKey)) return;
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
+        initWithTarget:self action:@selector(axs_glassify_notify_handlePan:)];
+    pan.cancelsTouchesInView = NO;   // 不抢子控件的点击，也不取消系统手势
+    pan.delegate = self;
+    [view addGestureRecognizer:pan];
+    objc_setAssociatedObject(view, kAxsGlassifyNotifyPanKey, pan,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;   // 与列表滚动、划走手势同时生效
+}
+
+- (void)axs_glassify_notify_handlePan:(UIPanGestureRecognizer *)pan {
+    UIView *view = pan.view;
+    if (!view) return;
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan:
+            [self axs_glassify_notify_beginDragForView:view];
+            break;
+        case UIGestureRecognizerStateChanged: {
+            // 位移取窗口坐标：卡片被列表滚动带着走时，自身坐标系里的位移会被抵消。
+            UIView *reference = view.window ?: view.superview;
+            CGPoint translation = [pan translationInView:reference];
+            [self axs_glassify_notify_dragGradientForView:view translationY:translation.y];
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            [self axs_glassify_notify_endDragForView:view];
+            break;
+        default:
+            break;
+    }
+}
+
+- (void)axs_glassify_notify_beginDragForView:(UIView *)view {
+    self.activeDrags += 1;
+    for (AxsGlassifyNotifyEffect *e in self.effects) {
+        if (e.view != view) continue;
+        e.dragProgress = 0;
+        break;
+    }
+    [self axs_glassify_notify_updateLink];
+}
+
 #pragma mark - 按需创建效果层
 
 - (void)axs_glassify_notify_ensureFishForEffect:(AxsGlassifyNotifyEffect *)e view:(UIView *)view {
@@ -784,6 +849,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
             [e.iconGlow removeFromSuperlayer];
             [self.effects removeObjectAtIndex:(NSUInteger)i];
         }
+    }
+    if (self.effects.count == 0) {
+        self.activeDrags = 0;   // 手势可能来不及收到 Ended，别让链接空转
     }
     [self axs_glassify_notify_updateLink];
 }
@@ -965,7 +1033,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
         // S 曲线滑动：把纵向拖动量归一化成 t(-1…1)，经三次贝塞尔 s 形映射后驱动横向位移。
         // amp = 0 时保持原有行为（transform 由缩放/倾斜单独负责，这里不动）。
         if (amp > 0) {
-            CGFloat progress = (CGFloat)fmax(-1.0, fmin(1.0, dy / 120.0));
+            // 满幅 = 一张卡片的高度（太矮的卡片给 70pt 下限）：拖出一张卡的距离就到最大摆幅。
+            CGFloat span = MAX(70.0, CGRectGetHeight(view.bounds) * 0.9);
+            CGFloat progress = (CGFloat)fmax(-1.0, fmin(1.0, dy / span));
             e.dragProgress = axs_glassify_notify_sCurveShape(progress);
             [self axs_glassify_notify_applyScale:[config axs_glassify_notify_notifyScale]
                                             tilt:[config axs_glassify_notify_tiltIntensity]
@@ -978,6 +1048,9 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 }
 
 - (void)axs_glassify_notify_endDragForView:(UIView *)view {
+    if (self.activeDrags > 0) {
+        self.activeDrags -= 1;
+    }
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     CGFloat amp = (CGFloat)[config axs_glassify_notify_sCurveAmp];
     for (AxsGlassifyNotifyEffect *e in self.effects) {
@@ -1028,8 +1101,10 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
                                      offsetX:0
                                       toView:view];
         [CATransaction commit];
+        [self axs_glassify_notify_updateLink];
         return;
     }
+    [self axs_glassify_notify_updateLink];
 }
 
 #pragma mark - 消失消散（划走/清除时液态溶解）
@@ -1075,6 +1150,8 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     if (self.effects.count == 0) return NO;
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     if (![config axs_glassify_notify_isEnabled]) return NO;
+    // 拖动中必须保持 tick：系统布局随时改写 transform，S 位移要靠逐帧校正补回去。
+    if (self.activeDrags > 0) return YES;
     // 只有这几项需要逐帧驱动。出现/爆发/溶解/触摸发光都是 CA 动画，不需要 tick。
     return [config axs_glassify_notify_gradientOn] ||
            [config axs_glassify_notify_fishOn] ||
@@ -1085,7 +1162,8 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 // 只有渐变时 15fps 足够（颜色本来就只按 10Hz 级变化）；有鱼/粒子/蝴蝶才要 30fps。
 - (NSUInteger)axs_glassify_notify_preferredFPS {
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
-    if ([config axs_glassify_notify_fishOn] ||
+    if (self.activeDrags > 0 ||
+        [config axs_glassify_notify_fishOn] ||
         [config axs_glassify_notify_particleOn] ||
         [config axs_glassify_notify_chargeFx]) {
         return 30;
@@ -1514,16 +1592,21 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
 
     [CATransaction commit];
 
-    if (self.effects.count == 0) { [self axs_glassify_notify_stopLink]; return; }
+    if (self.effects.count == 0) {
+        self.activeDrags = 0;
+        [self axs_glassify_notify_stopLink];
+        return;
+    }
     // 全关且无缩放/倾斜：停表省电（配置变更通知 / 新通知挂载会自动重启）。
     // 缩放/倾斜必须保持 tick 存活——系统随时改写 transform，停表就会被覆盖（大小失效根因）。
-    BOOL transformActive = (fabs(nScale - 1.0) > 0.001) || (tiltI > 0.001);
+    BOOL transformActive = (fabs(nScale - 1.0) > 0.001) || (tiltI > 0.001) ||
+                           self.activeDrags > 0;
     if (!gradientOn && !fishOn && !particleOn && !charging && !transformActive) {
         [self axs_glassify_notify_stopLink];
         return;
     }
     // 自适应帧率：纯慢效（渐变）15fps，鱼/粒子/充电等快效 30fps。
-    NSInteger want = (fishOn || particleOn || charging) ? 30 : 15;
+    NSInteger want = (fishOn || particleOn || charging || self.activeDrags > 0) ? 30 : 15;
     if (self.link && self.link.preferredFramesPerSecond != (int)want) {
         self.link.preferredFramesPerSecond = (int)want;
     }

@@ -120,27 +120,8 @@ static void axs_glassify_notify_applyScheduledPreset(void) {
         axs_glassify_notify_touchGlowForView:(UIView *)self];
 }
 
-- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    %orig;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    UIView *view = (UIView *)self;
-    CGFloat dy = [touch locationInView:view].y - CGRectGetMidY(view.bounds);
-    [[AxsGlassifyNotifyAnimator axs_glassify_notify_shared]
-        axs_glassify_notify_dragGradientForView:view translationY:dy];
-}
-
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    %orig;
-    [[AxsGlassifyNotifyAnimator axs_glassify_notify_shared]
-        axs_glassify_notify_endDragForView:(UIView *)self];
-}
-
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    %orig;
-    [[AxsGlassifyNotifyAnimator axs_glassify_notify_shared]
-        axs_glassify_notify_endDragForView:(UIView *)self];
-}
+// 拖动不再用 -touchesMoved:（会被列表滚动手势取消），
+// 改由 AxsGlassifyNotifyAnimator 在 attach 时挂的 UIPanGestureRecognizer 驱动。
 
 %end
 
