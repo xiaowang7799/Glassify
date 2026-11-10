@@ -1,9 +1,10 @@
 # 液态玻璃（Glassify）
 
-一个 iOS 越狱插件，6.0.0 起合并了原 `Notification-Beautification`（液态通知）：
+一个 iOS 越狱插件，6.0.0 起合并了原 `Notification-Beautification`（液态通知），6.7.0 起再合并原 `SBezierNoti`（S 形贝塞尔通知）：
 
 - **玻璃部分**：把系统里本来就有毛玻璃的界面（控制中心、通知中心、文件夹、Dock、App 切换器…）重绘成更明显的"液态玻璃"。
 - **通知部分**：锁屏 / 通知中心的通知卡片换成自带玻璃底板 + 流动渐变 + 游鱼 / 泡泡 / 粒子 + 出现动画 + 尺寸圆角光影。
+- **S 形贝塞尔部分**：通知滚动进入视野时的 S 滑动等 12 种入场特效，以及横幅弹出时的 S 形入场 + 装饰曲线。
 
 > 注意：玻璃部分**不会**给整个桌面盖一层模糊。桌面/图标本身没有毛玻璃层，所以保持清晰；
 > 只有系统原本就带模糊的控件会被增强。
@@ -35,6 +36,22 @@
 - **情境**：充电蝴蝶（亮晶晶、大小可调、会扇翅膀飘起）、低电量自动降载、按时段自动切换预设、自定义预设保存/应用。
 - 设置保存后实时生效，无需重启 SpringBoard。
 
+### S 形贝塞尔入场（6.7.0 合并自 SBezierNoti）
+
+1. **滚动入场特效**（主力）—— 锁屏与通知中心里，每条通知滚动进入视野时沿自己的 S 轨迹滑入落位。机制照搬 [Cask](https://github.com/rpetrich/Cask)：在单元格被创建来显示的那一刻播**一次**动画，**不是每帧计算偏移**。面板「特效类型」共 13 档（0 关闭、1 淡入、2 缩放、3 横向展开、4 侧滑、5 上浮、6 翻转、7 S 滑动、8–12 各种带透视的旋转/翻转组合）。
+2. **横幅 S 形入场**（附加）—— 横幅弹出时沿 S 轨迹滑入，并在下缘画出一条会「生长」的装饰曲线（`strokeEnd` 0 → 1）。
+
+两个效果独立开关，都受总开关 `enabled` 控制。列表识别、一次性动画、`tableView.window` 守卫、「减弱动态效果」尊重、诊断自报告（面板「S 形贝塞尔诊断」分组直接显示真实类名，不用开系统日志）等行为与原插件一致；调试日志的标签变为 `[Glassify-SBez]`。
+
+**合并后的两处仲裁**（这是两个项目功能真正重叠的地方）：
+
+| 冲突 | 处理 |
+|---|---|
+| 横幅 S 入场（整条 `transform`） vs 出现动画 `appear_mode`（`transform.scale`） | **互斥，S 入场优先**。`sbz_entrance_enabled` 打开时，`AxsGlassifyNotifyAnimator` 的 attach 路径把 appear_mode 视作 0，不再挂 scale 动画；两条动画不会同层打架。 |
+| 入场 / 特效动画落位 vs 玻璃的 `notify_scale` / `tilt` model transform | 所有入场档位改成**以 layer 当前 transform 为基准**起落（终点 = 基准值），动画移除时不再从缩放态跳回原尺寸；淡入同理落到 `layer.opacity`。 |
+
+`NCNotificationShortLookView` / `NCNotificationLongLookView` 在合并前是两个 dylib 各自 `%hook` 同一批方法；现在只剩 `Hooks/AxsGlassifyNotifications.xm` 一处 hook，玻璃底板、动画引擎和 S 入场在同一次 `layoutSubviews` 里按序驱动。`SBUICNotificationView`（旧系统横幅）仍只在 S 贝塞尔的 hook 组里。
+
 ## 合并后的结构
 
 一个 dylib、一个偏好域（`com.axs.glassify`）、一套 hook：
@@ -42,10 +59,15 @@
 | 文件 | 职责 |
 |---|---|
 | `Hooks/AxsGlassifyMain.xm` | 系统毛玻璃（`_UIBackdropViewSettings` / `UIVisualEffectView`） |
-| `Hooks/AxsGlassifyNotifications.xm` | 通知卡片：**一个** hook 点同时驱动下面两个引擎 |
+| `Hooks/AxsGlassifyNotifications.xm` | 通知卡片：**一个** hook 点同时驱动下面三个引擎（含合并后的 S 入场入口） |
+| `Hooks/AxsGlassifySBezier.xm` | 旧系统横幅 `SBUICNotificationView` + 列表滚动入场 hook 组（`UIScrollView` / cell / `UITableView` 私有触发） |
 | `Sources/AxsGlassifyLiquid.*` | 玻璃底板：iOS 26+ 用 `UIGlassEffect`，低版本回退 chrome 材质 + 高光/色散 |
 | `Sources/AxsGlassifyNotifyAnimator.*` | 渐变 / 游鱼 / 粒子 / 出现动画 / 缩放倾斜 / 溶解 |
-| `Sources/AxsGlassifyNotifyConfig.*` | 通知部分的配置访问器（同一份快照） |
+| `Sources/AxsGlassifyNotifyConfig.*` | 通知部分 + S 贝塞尔部分的配置访问器（同一份快照，含互斥仲裁谓词） |
+| `Sources/AxsGlassifySBezierCurve.h` | S 波几何、配色、入场 / cell 特效动画构造（仅 `static inline`，无 ObjC 类） |
+| `Sources/AxsGlassifySBezierListEntrance.m` | 列表识别 + cell 出现时的一次性入场（Cask 机制） |
+| `Sources/AxsGlassifySBezierDecoration.m` | 横幅 S 入场：装饰层、观察配置、播放 |
+| `Sources/AxsGlassifySBezierDiagnostics.h` | 滚动入场的自报告（面板「S 形贝塞尔诊断」读取） |
 
 合并时收敛掉的冲突：
 
@@ -55,6 +77,27 @@
   Preferences 默认写入，不广播，改完要等下次重建视图才看得到。
 - **旧配置自动迁移**：首次打开面板时把 `com.axs.notifyliquid.plist` 里的键搬到新域（`migrated_notifyliquid` 标记，只做一次）。
 - **包冲突**：`conflicts/replaces/provides: com.axs.notifyliquid`，安装时自动顶掉旧的「液态通知」，不会两个 dylib 同时 hook 同一批类。
+
+SBezierNoti 并入时额外收敛的冲突（6.7.0）：
+
+- **一个类只有一个 `%hook` 块**：`NCNotificationShortLookView` / `NCNotificationLongLookView` 原来被两个 dylib 各自 hook
+  `layoutSubviews` / `didMoveToWindow`，加载顺序决定谁赢。现在这两个类只在 `AxsGlassifyNotifications.xm` 里 hook 一次，
+  S 入场通过 `UIView (AxsGlassifySBezier)` 分类方法被同一次布局调用；`SBUICNotificationView` 不在玻璃侧出现，仍单独成组。
+- **横幅入场 vs 出现动画互斥**：S 入场驱动整条 `transform`，`appear_mode` 驱动 `transform.scale`，同层并存会互相顶掉。
+  仲裁只看一个谓词 `axs_glassify_notify_sbezEntranceActive`：S 入场开 → 出现动画不挂；S 入场关 → 出现动画照旧。
+- **入场终点改为基准 transform**：玻璃的 `notify_scale` / `tilt_intensity` 是写在 model transform 上的，原插件所有档位把
+  终点写成 identity，动画一移除缩放就没了。现在起点/终点都以 `layer.transform` 为基准（淡入以 `layer.opacity` 为基准）。
+- **配置键统一 `sbz_` 前缀**：旧域的 `duration` / `amplitude` / `width` / `opacity` / `hue` 这类裸名并入同一个 plist 后必撞名，
+  现在分别是 `sbz_duration`…，滚动档位在 `sbz_scroll_effect`。旧值由面板首次打开时按固定映射表搬一次（`migrated_sbeziernoti`），
+  新域已有的值优先，不会被旧值覆盖。
+- **旧 `enabled` 故意不迁移**：合并后 `enabled` 是**全插件总开关**，打开会连带增强系统毛玻璃（进程级 `_UIBackdropViewSettings` hook）。
+  只用过 S形贝塞尔通知 的用户升级后被静默开启玻璃等于"改了没要求改的东西"，所以只搬特效参数，总开关留给用户自己开；
+  同时 `sbz_scroll_effect` 的缺省从旧插件的 7（S 滑动）改为 0（关闭），保证升级后默认惰性。
+- **热 hook 门控**：`UIView didMoveToSuperview` 与 `UIScrollView didMoveToWindow` 是全进程级别的热点。诊断记录仍然保留
+  （识别独立于开关，错判才能被发现），但「刚出现」标记的关联对象写入与 async 派发只在 `sbz_scroll_effect > 0` 且总开关打开时执行。
+- **包冲突**：`Conflicts/Replaces` 增加 `com.axs.sbeziernoti`，装 Glassify 会顶掉旧的 S形贝塞尔通知；`Provides` 不含它，
+  所以两个插件同时依赖 `com.axs.sbeziernoti` 的旧配方不会因此得到满足，需要用户自己确认。
+- **旧键遗留**：`scrollEnabled` / `scrollRotation` 在原插件 5.2.0-13 起已不再读取，这次也不迁移（留着不影响）。
 
 ## 通知玻璃的实现
 

@@ -71,6 +71,15 @@
 - (double)axs_glassify_notify_notifyWidth;
 // S 曲线滑动：拖动通知时视图沿贝塞尔 S 形轨迹运动的水平幅度（0–60pt，0=关）。
 - (double)axs_glassify_notify_sCurveAmp;
+// ── S 形贝塞尔通知（6.7.0 合并自 com.axs.sbeziernoti，键名统一 sbz_ 前缀） ──
+// 两个开关：横幅 S 形入场、列表滚动入场。都只在总开关 enabled 打开时生效。
+- (BOOL)axs_glassify_notify_sbezEntranceEnabled;
+// 合并后的互斥仲裁：横幅 S 入场占用整条 transform，此时出现动画必须让位。
+- (BOOL)axs_glassify_notify_sbezEntranceActive;
+- (BOOL)axs_glassify_notify_sbezScrollActive;
+// 通用读取（带类型与有限值校验，缺省回退）。
+- (BOOL)axs_glassify_notify_sbezBoolForKey:(NSString *)key defaultValue:(BOOL)defaultValue;
+- (double)axs_glassify_notify_sbezDoubleForKey:(NSString *)key defaultValue:(double)defaultValue;
 // 配置代次：每次偏好重新加载 +1，供渲染层判断是否需要整段重刷。
 - (NSUInteger)axs_glassify_notify_generation;
 // Generic accessors.

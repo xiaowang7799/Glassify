@@ -607,7 +607,11 @@ static UILabel *axs_glassify_notify_findTitleLabel(UIView *view, int depth) {
     [self.effects addObject:effect];
 
     // 出现动画（五档）：果冻弹跳 / 除雾渐显 / 挤压拉伸 / 凝胶膨胀。仅首次挂载播放。
+    // 互斥：横幅 S 形入场开着时它独占整条 transform，这里必须让位（见 NotifyConfig）。
     NSInteger appearMode = [config axs_glassify_notify_appearMode];
+    if ([config axs_glassify_notify_sbezEntranceActive]) {
+        appearMode = 0;
+    }
     if (appearMode > 0 && !seen) {
         double intensity = [config axs_glassify_notify_appearIntensity];
         double s = [config axs_glassify_notify_notifyScale];

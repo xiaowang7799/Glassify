@@ -47,8 +47,10 @@
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
     CGFloat height = CGRectGetHeight(self.contentView.bounds);
     CGFloat available = MAX(0.0, width - 32.0);
-    CGFloat valueWidth = MIN(52.0, available * 0.25);
-    CGFloat titleWidth = MIN(110.0, available * 0.32);
+    // 具名档位（如「特效类型」）右侧要显示一个词而不是数字，需要更宽的值区。
+    BOOL named = [[self.specifier propertyForKey:@"titles"] isKindOfClass:[NSArray class]];
+    CGFloat valueWidth = named ? MIN(96.0, available * 0.34) : MIN(52.0, available * 0.25);
+    CGFloat titleWidth = MIN(named ? 88.0 : 110.0, available * (named ? 0.30 : 0.32));
     CGFloat sliderX = 16.0 + titleWidth + 8.0;
     CGFloat valueX = MAX(sliderX, width - 16.0 - valueWidth);
     self.textLabel.frame = CGRectMake(16.0, 0, titleWidth, height);
@@ -75,12 +77,35 @@
 }
 
 - (void)axs_glassify_updateLabel {
-    NSString *value = [NSString stringWithFormat:@"%.1f", self.slider.value];
+    // specifier 可以声明 titles：这一行就读成「选项」而不是数字（特效类型选择器）。
+    NSString *value = nil;
+    NSArray *titles = [self.specifier propertyForKey:@"titles"];
+    if ([titles isKindOfClass:[NSArray class]] && titles.count > 0) {
+        NSInteger index = (NSInteger)lround(self.slider.value);
+        if (index < 0) index = 0;
+        if (index >= (NSInteger)titles.count) index = (NSInteger)titles.count - 1;
+        id title = titles[(NSUInteger)index];
+        value = [title isKindOfClass:[NSString class]] ? title : [title description];
+    } else {
+        value = [NSString stringWithFormat:@"%.1f", self.slider.value];
+    }
     self.valueLabel.text = value;
     self.slider.accessibilityValue = value;
 }
 
+// 具名档位必须落在整档上，不能停在两档之间。
+- (void)axs_glassify_snapToStepIfNamed {
+    if (![[self.specifier propertyForKey:@"titles"] isKindOfClass:[NSArray class]]) {
+        return;
+    }
+    CGFloat snapped = (CGFloat)round(self.slider.value);
+    if (snapped != self.slider.value) {
+        self.slider.value = snapped;
+    }
+}
+
 - (void)axs_glassify_sliderMoved:(UISlider *)sender {
+    [self axs_glassify_snapToStepIfNamed];
     [self axs_glassify_updateLabel];
     // VoiceOver adjustments do not necessarily emit touch-up events.
     if (UIAccessibilityIsVoiceOverRunning()) {
@@ -89,6 +114,7 @@
 }
 
 - (void)axs_glassify_sliderCommitted:(UISlider *)sender {
+    [self axs_glassify_snapToStepIfNamed];
     [self axs_glassify_updateLabel];
     [self.handler axs_glassify_setSliderValue:sender.value specifier:self.specifier];
 }
