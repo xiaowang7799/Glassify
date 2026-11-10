@@ -247,11 +247,24 @@ static BOOL axs_glassify_notify_bool(id value, BOOL def) {
     return [self axs_glassify_notify_sbezBoolForKey:@"sbz_entrance_enabled" defaultValue:NO];
 }
 
-// 互斥仲裁的唯一真相：横幅 S 入场生效时，动画引擎不得再往同一 layer 上挂
+- (BOOL)axs_glassify_notify_sbezDecoEnabled {
+    return [self axs_glassify_notify_sbezBoolForKey:@"sbz_decoration_enabled" defaultValue:NO];
+}
+
+- (BOOL)axs_glassify_notify_sbezDecoFadeStyle {
+    return [self axs_glassify_notify_sbezBoolForKey:@"sbz_decoration_style" defaultValue:NO];
+}
+
+// 互斥仲裁的唯一真相：S 入场**轨迹**生效时，动画引擎不得再往同一 layer 上挂
 // transform.scale 的出现动画 —— 整条 transform 与它的子键路径同层并存时，
 // Core Animation 的表现层只会留下一份，观感就是抖动和落位错乱。
+// 装饰线只动 strokeEnd，不在这条仲裁里。
 - (BOOL)axs_glassify_notify_sbezEntranceActive {
     return [self axs_glassify_notify_isEnabled] && [self axs_glassify_notify_sbezEntranceEnabled];
+}
+
+- (BOOL)axs_glassify_notify_sbezDecoActive {
+    return [self axs_glassify_notify_isEnabled] && [self axs_glassify_notify_sbezDecoEnabled];
 }
 
 // 滚动入场没有独立开关：特效档位 0 即「关闭」。

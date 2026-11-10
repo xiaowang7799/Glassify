@@ -54,7 +54,7 @@ static NSArray<NSString *> *axs_glassify_notify_presetKeys(void) {
              @"icon_corner", @"icon_scale", @"icon_glow",
              @"corner_radius", @"notify_opacity", @"shadow_intensity",
              @"tilt_intensity", @"notify_width", @"s_curve_amp",
-             @"sbz_entrance_enabled", @"sbz_debug_log",
+             @"sbz_entrance_enabled", @"sbz_decoration_enabled", @"sbz_decoration_style", @"sbz_debug_log",
              @"sbz_scroll_effect", @"sbz_scroll_duration", @"sbz_scroll_amplitude",
              @"sbz_scroll_span", @"sbz_scroll_variation",
              @"sbz_duration", @"sbz_amplitude", @"sbz_frequency",

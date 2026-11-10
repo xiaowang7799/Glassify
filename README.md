@@ -39,15 +39,16 @@
 ### S 形贝塞尔入场（6.7.0 合并自 SBezierNoti）
 
 1. **滚动入场特效**（主力）—— 锁屏与通知中心里，每条通知滚动进入视野时沿自己的 S 轨迹滑入落位。机制照搬 [Cask](https://github.com/rpetrich/Cask)：在单元格被创建来显示的那一刻播**一次**动画，**不是每帧计算偏移**。面板「特效类型」共 13 档（0 关闭、1 淡入、2 缩放、3 横向展开、4 侧滑、5 上浮、6 翻转、7 S 滑动、8–12 各种带透视的旋转/翻转组合）。
-2. **横幅 S 形入场**（附加）—— 横幅弹出时沿 S 轨迹滑入，并在下缘画出一条会「生长」的装饰曲线（`strokeEnd` 0 → 1）。
+2. **横幅 S 形入场轨迹**（`sbz_entrance_enabled`）—— 横幅弹出时沿 S 轨迹滑入落位。只驱动 `transform`，落位即归零，停留时无残留。
+3. **S 形装饰曲线**（`sbz_decoration_enabled` + `sbz_decoration_style`）—— 横幅下缘画出的一条 S 波形线（`strokeEnd` 生长出来）。这是**静态的线**，和上面那条运动轨迹几何上不是一回事：轨迹是 x(时间)、线是 y(横向位置)，只是都像 S。`sbz_decoration_style` 决定线进场后「常驻停留」(0，画满停住，原插件的签名观感) 还是「淡出消失」(1，画满后收回)。
 
-两个效果独立开关，都受总开关 `enabled` 控制。列表识别、一次性动画、`tableView.window` 守卫、「减弱动态效果」尊重、诊断自报告（面板「S 形贝塞尔诊断」分组直接显示真实类名，不用开系统日志）等行为与原插件一致；调试日志的标签变为 `[Glassify-SBez]`。
+三者各自独立开关，都受总开关 `enabled` 控制。轨迹与装饰线在 6.7.0 拆分前共用一个 `entranceEnabled`，因此旧值迁移时同时点亮两者、并把样式钉成「常驻」，完全复刻升级前观感。列表识别、一次性动画、`tableView.window` 守卫、「减弱动态效果」尊重、诊断自报告（面板「S 形贝塞尔诊断」分组直接显示真实类名，不用开系统日志）等行为与原插件一致；调试日志的标签变为 `[Glassify-SBez]`。
 
 **合并后的两处仲裁**（这是两个项目功能真正重叠的地方）：
 
 | 冲突 | 处理 |
 |---|---|
-| 横幅 S 入场（整条 `transform`） vs 出现动画 `appear_mode`（`transform.scale`） | **互斥，S 入场优先**。`sbz_entrance_enabled` 打开时，`AxsGlassifyNotifyAnimator` 的 attach 路径把 appear_mode 视作 0，不再挂 scale 动画；两条动画不会同层打架。 |
+| 横幅 S 入场**轨迹**（整条 `transform`） vs 出现动画 `appear_mode`（`transform.scale`） | **互斥，轨迹优先**。`sbz_entrance_enabled` 打开时，`AxsGlassifyNotifyAnimator` 的 attach 路径把 appear_mode 视作 0，不再挂 scale 动画。**装饰线不参与这条仲裁** —— 它只动 `strokeEnd`，不碰 transform，可与任意出现动画共存。 |
 | 入场 / 特效动画落位 vs 玻璃的 `notify_scale` / `tilt` model transform | 所有入场档位改成**以 layer 当前 transform 为基准**起落（终点 = 基准值），动画移除时不再从缩放态跳回原尺寸；淡入同理落到 `layer.opacity`。 |
 
 `NCNotificationShortLookView` / `NCNotificationLongLookView` 在合并前是两个 dylib 各自 `%hook` 同一批方法；现在只剩 `Hooks/AxsGlassifyNotifications.xm` 一处 hook，玻璃底板、动画引擎和 S 入场在同一次 `layoutSubviews` 里按序驱动。`SBUICNotificationView`（旧系统横幅）仍只在 S 贝塞尔的 hook 组里。
@@ -83,8 +84,11 @@ SBezierNoti 并入时额外收敛的冲突（6.7.0）：
 - **一个类只有一个 `%hook` 块**：`NCNotificationShortLookView` / `NCNotificationLongLookView` 原来被两个 dylib 各自 hook
   `layoutSubviews` / `didMoveToWindow`，加载顺序决定谁赢。现在这两个类只在 `AxsGlassifyNotifications.xm` 里 hook 一次，
   S 入场通过 `UIView (AxsGlassifySBezier)` 分类方法被同一次布局调用；`SBUICNotificationView` 不在玻璃侧出现，仍单独成组。
-- **横幅入场 vs 出现动画互斥**：S 入场驱动整条 `transform`，`appear_mode` 驱动 `transform.scale`，同层并存会互相顶掉。
-  仲裁只看一个谓词 `axs_glassify_notify_sbezEntranceActive`：S 入场开 → 出现动画不挂；S 入场关 → 出现动画照旧。
+- **横幅入场 vs 出现动画互斥**：S 入场**轨迹**驱动整条 `transform`，`appear_mode` 驱动 `transform.scale`，同层并存会互相顶掉。
+  仲裁只看一个谓词 `axs_glassify_notify_sbezEntranceActive`：轨迹开 → 出现动画不挂；轨迹关 → 出现动画照旧。
+- **轨迹与装饰线拆成两个独立开关**：原插件一个 `entranceEnabled` 同时管「滑入轨迹」和「下缘常驻的 S 线」，两者常被当成
+  一回事（其实一个是 x(时间)、一个是 y(横向位置)，只是都像 S）。6.7.0 拆为 `sbz_entrance_enabled` + `sbz_decoration_enabled`，
+  装饰线另有 `sbz_decoration_style`（常驻/淡出）。线改画 `strokeEnd` 关键帧且与 transform 解耦，任何出现动画都能和线共存。
 - **入场终点改为基准 transform**：玻璃的 `notify_scale` / `tilt_intensity` 是写在 model transform 上的，原插件所有档位把
   终点写成 identity，动画一移除缩放就没了。现在起点/终点都以 `layer.transform` 为基准（淡入以 `layer.opacity` 为基准）。
 - **配置键统一 `sbz_` 前缀**：旧域的 `duration` / `amplitude` / `width` / `opacity` / `hue` 这类裸名并入同一个 plist 后必撞名，

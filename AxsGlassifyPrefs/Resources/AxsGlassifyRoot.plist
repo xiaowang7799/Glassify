@@ -1086,7 +1086,7 @@
 			<key>label</key>
 			<string>横幅 S 形入场（原 S 形贝塞尔通知）</string>
 			<key>footerText</key>
-			<string>横幅出现时沿 S 轨迹滑入，并在下缘画出一条会生长的装饰曲线。打开这一项会顶掉上面的「出现动画」——两者驱动同一条 transform，不能叠加。</string>
+			<string>轨迹与装饰线是两个独立功能：「入场轨迹」让横幅沿 S 摆动滑入（驱动 transform，开着它会顶掉上面的「出现动画」）；「装饰曲线」在横幅下缘画出静态 S 波形线（只画线，不碰动画）。可以只要一个。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -1098,7 +1098,42 @@
 			<key>key</key>
 			<string>sbz_entrance_enabled</string>
 			<key>label</key>
-			<string>启用横幅 S 形入场</string>
+			<string>启用 S 形入场轨迹</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.axs.glassify</string>
+			<key>key</key>
+			<string>sbz_decoration_enabled</string>
+			<key>label</key>
+			<string>启用装饰曲线（横幅下缘的 S 线）</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSTitleValueCell</string>
+			<key>cellClass</key>
+			<string>AxsGlassifySliderCell</string>
+			<key>default</key>
+			<real>0.0</real>
+			<key>defaults</key>
+			<string>com.axs.glassify</string>
+			<key>key</key>
+			<string>sbz_decoration_style</string>
+			<key>label</key>
+			<string>曲线进场后</string>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>titles</key>
+			<array>
+				<string>常驻停留</string>
+				<string>淡出消失</string>
+			</array>
 		</dict>
 		<dict>
 			<key>cell</key>

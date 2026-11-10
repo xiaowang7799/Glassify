@@ -94,6 +94,17 @@ static NSDictionary<NSString *, NSString *> *axs_glassify_sbez_migrations(void) 
             if (v == nil || current[newKey] != nil) continue;   // 缺键或新域已有值：不动
             values[newKey] = v;
         }
+        // 6.7.0 把横幅侧拆成「轨迹」+「装饰线」两个独立开关。旧插件一个
+        // entranceEnabled 同时管两者，所以老用户开了就得同时点亮两者，
+        // 并把样式钉成「常驻」(0) —— 完全复刻升级前的观感（线画满停住）。
+        if (legacy[@"entranceEnabled"] != nil && values[@"sbz_entrance_enabled"] != nil) {
+            if (current[@"sbz_decoration_enabled"] == nil) {
+                values[@"sbz_decoration_enabled"] = legacy[@"entranceEnabled"];
+            }
+            if (current[@"sbz_decoration_style"] == nil) {
+                values[@"sbz_decoration_style"] = @0;   // 常驻
+            }
+        }
         if (values.count > 0) {
             axs_glassify_writePreferences(values, &error);
         }
@@ -181,6 +192,7 @@ static NSDictionary<NSString *, NSString *> *axs_glassify_sbez_migrations(void) 
         @"motion_highlight": @NO,
         @"low_power_guard": @YES,
         @"sbz_entrance_enabled": @NO,
+        @"sbz_decoration_enabled": @NO,
         @"sbz_scroll_effect": @0,
     }];
 }
@@ -208,6 +220,8 @@ static NSDictionary<NSString *, NSString *> *axs_glassify_sbez_migrations(void) 
         // 注意 appear_mode 会被 sbz_entrance_enabled 互斥顶掉，这里显式归零避免歧义。
         @"sbz_scroll_effect": @5,
         @"sbz_entrance_enabled": @YES,
+        @"sbz_decoration_enabled": @YES,
+        @"sbz_decoration_style": @0,
         @"appear_mode": @0,
     }];
 }
@@ -274,7 +288,7 @@ static NSArray<NSString *> *axs_glassify_presetKeys(void) {
              @"icon_corner", @"icon_scale", @"icon_glow",
              @"corner_radius", @"notify_opacity", @"shadow_intensity",
              @"tilt_intensity", @"notify_width", @"s_curve_amp",
-             @"sbz_entrance_enabled", @"sbz_debug_log",
+             @"sbz_entrance_enabled", @"sbz_decoration_enabled", @"sbz_decoration_style", @"sbz_debug_log",
              @"sbz_scroll_effect", @"sbz_scroll_duration", @"sbz_scroll_amplitude",
              @"sbz_scroll_span", @"sbz_scroll_variation",
              @"sbz_duration", @"sbz_amplitude", @"sbz_frequency",

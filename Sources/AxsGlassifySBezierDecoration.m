@@ -12,7 +12,7 @@
 // with a single associated-object read instead of walking the hierarchy.
 enum {
     axs_glassify_sbez_stateUnprocessed = 0,
-    axs_glassify_sbez_stateClaimed = 1,   // this view owns the accent
+    axs_glassify_sbez_stateClaimed = 1,   // this view owns the decoration
     axs_glassify_sbez_stateRejected = 2,  // an ancestor owns it; never look again
 };
 
@@ -41,31 +41,52 @@ static CGFloat axs_glassify_sbez_configValue(NSString *key, CGFloat fallback) {
                      axs_glassify_notify_sbezDoubleForKey:key defaultValue:(double)fallback];
 }
 
-// The entrance effect needs both the master switch and its own switch. The
-// verdict is one shared predicate on the config object because the glass side
-// must consult the same answer: while the S-shaped banner entrance is active it
-// owns the card's `transform`, so the appear animation (transform.scale) has to
-// stand down instead of fighting it frame by frame.
+// 横幅侧现在是**两个独立功能**（6.7.0 拆分，之前共用一个开关）：
+//
+//   1. S 形入场轨迹 = transform 动画，`sbz_entrance_enabled`
+//   2. S 形装饰曲线 = 画出来的那条线，`sbz_decoration_enabled`（+ `sbz_decoration_style`
+//      决定它进场后常驻还是淡出）
+//
+// 两者几何上本来就不是同一个 S：轨迹是 x(时间)，装饰线是 y(横向位置)，
+// 只是看起来像。拆开后用户可以只要轨迹、只要线、或两个都要。
+//
+// entranceActive 是**共享**谓词（玻璃侧也查它）：轨迹开着时它独占整条 transform，
+// 出现动画必须让位。decoActive 只管画线，与 transform 无关，不影响出现动画。
 static BOOL axs_glassify_sbez_entranceActive(void) {
     return [[AxsGlassifyNotifyConfig axs_glassify_notify_shared] axs_glassify_notify_sbezEntranceActive];
+}
+
+static BOOL axs_glassify_sbez_decoActive(void) {
+    return [[AxsGlassifyNotifyConfig axs_glassify_notify_shared] axs_glassify_notify_sbezDecoActive];
+}
+
+// 装饰曲线进场后是否淡出（style 1），而不是常驻（style 0）。
+static BOOL axs_glassify_sbez_decoFades(void) {
+    return [[AxsGlassifyNotifyConfig axs_glassify_notify_shared] axs_glassify_notify_sbezDecoFadeStyle];
+}
+
+// 认领横幅的判断：两个功能任意一个要画，这个 view 才需要接管装饰层。
+static BOOL axs_glassify_sbez_bannerAnyActive(void) {
+    return axs_glassify_sbez_entranceActive() || axs_glassify_sbez_decoActive();
 }
 
 // One number standing for every input that affects the drawing, so an unchanged
 // layout pass can be detected without rebuilding the path.
 static NSUInteger axs_glassify_sbez_styleSignature(BOOL enabled, CGFloat amplitude, CGFloat frequency,
                                                  CGFloat phase, CGFloat width, CGFloat opacity,
-                                                 CGFloat hue) {
+                                                 CGFloat hue, BOOL fade) {
     float inputs[6] = {(float)amplitude, (float)frequency, (float)phase,
                        (float)width, (float)opacity, (float)hue};
-    uint32_t parts[7];
+    uint32_t parts[8];
     parts[0] = enabled ? 1u : 0u;
     for (NSInteger i = 0; i < 6; i++) {
         union { float f; uint32_t u; } cast;
         cast.f = inputs[i];
         parts[i + 1] = cast.u;
     }
+    parts[7] = fade ? 1u : 0u;
     uint64_t hash = 1469598103934665603ULL;
-    for (NSInteger i = 0; i < 7; i++) {
+    for (NSInteger i = 0; i < 8; i++) {
         hash ^= parts[i];
         hash *= 1099511628211ULL;
     }
@@ -101,8 +122,10 @@ static BOOL axs_glassify_sbez_hasClaimedAncestor(UIView *view) {
         return;
     }
 
-    // Cheap gates before anything hierarchical: no config, no traversal.
-    if (!axs_glassify_sbez_entranceActive()) {
+    // Cheap gates before anything hierarchical: no config beyond the shared
+    // snapshot, no traversal. 装饰线开关也参与认领：只开线、不开轨迹时同样要有
+    // 一个 view 持有装饰层。
+    if (!axs_glassify_sbez_bannerAnyActive()) {
         return;
     }
     if (self.window == nil || self.superview == nil) {
@@ -129,6 +152,9 @@ static BOOL axs_glassify_sbez_hasClaimedAncestor(UIView *view) {
         if (view == nil) {
             return;
         }
+        // 认领时总是装好装饰层与配置观察者：线是否真画由 refreshDecoration 里的
+        // decoActive 决定。这样「先只开轨迹、后开装饰线」也能实时生效，不必等
+        // 下一条通知重新认领。轨迹与线各自独立：装层不等于播 transform 动画。
         [view axs_glassify_sbez_installDecoration];
         [view axs_glassify_sbez_animateEntrance];
     });
@@ -186,7 +212,9 @@ static BOOL axs_glassify_sbez_hasClaimedAncestor(UIView *view) {
         return;
     }
 
-    BOOL enabled = axs_glassify_sbez_entranceActive();
+    // 装饰线由自己的开关决定，不再跟 S 轨迹共用；fade 决定进场后常驻还是淡出。
+    BOOL enabled = axs_glassify_sbez_decoActive();
+    BOOL fade = axs_glassify_sbez_decoFades();
     CGFloat amplitude = axs_glassify_sbez_configValue(@"sbz_amplitude", axs_glassify_sbez_defaultAmplitude);
     CGFloat frequency = axs_glassify_sbez_configValue(@"sbz_frequency", axs_glassify_sbez_defaultFrequency);
     CGFloat phase = axs_glassify_sbez_configValue(@"sbz_phase", 0.0f);
@@ -195,7 +223,7 @@ static BOOL axs_glassify_sbez_hasClaimedAncestor(UIView *view) {
     CGFloat hue = axs_glassify_sbez_configValue(@"sbz_hue", axs_glassify_sbez_defaultHue);
 
     NSUInteger style = axs_glassify_sbez_styleSignature(enabled, amplitude, frequency, phase,
-                                                      lineWidth, opacity, hue);
+                                                      lineWidth, opacity, hue, fade);
     if (lastSize != nil && lastStyle != nil
         && CGSizeEqualToSize(lastSize.CGSizeValue, size)
         && lastStyle.unsignedIntegerValue == style) {
@@ -212,6 +240,10 @@ static BOOL axs_glassify_sbez_hasClaimedAncestor(UIView *view) {
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         layer.path = NULL;
+        // 关掉线时把淡出动画撤掉、strokeEnd 的 model 值拉回 1：
+        // 只开轨迹关线时，装饰层必须干净地不存在。
+        [layer removeAnimationForKey:@"axs_glassify_sbez_fade"];
+        layer.strokeEnd = 1.0f;
         [CATransaction commit];
         return;
     }
@@ -234,10 +266,43 @@ static BOOL axs_glassify_sbez_hasClaimedAncestor(UIView *view) {
     layer.strokeColor = axs_glassify_sbez_curveColor(hue).CGColor;
     layer.lineWidth = MAX(0.5f, MIN(lineWidth, 24.0f));
     layer.opacity = (float)MAX(0.0f, MIN(opacity, 1.0f));
+    layer.strokeEnd = fade ? 0.0f : 1.0f;
     [CATransaction commit];
+
+    // 每次（重）画播放一次生长：常驻档画满停住（最后一条曲线就是原插件的签名
+    // 观感），淡出档画满后收回消失。model 值与动画终点一致（常驻 1 / 淡出 0），
+    // 动画被清理时也不会闪。
+    [self axs_glassify_sbez_playDecorationDrawFade:fade];
+}
+
+// strokeEnd 生长动画。Forwards + 不自动移除：表现层停在最后一帧 ——
+// 常驻档停在 1，淡出档停在 0（线真消失）。若用 Removed，完成瞬间会跳回
+// model 值，淡出档的线会闪回来。
+- (void)axs_glassify_sbez_playDecorationDrawFade:(BOOL)fade {
+    CAShapeLayer *layer = objc_getAssociatedObject(self, &axs_glassify_sbez_keyLayer);
+    if (layer == nil) {
+        return;
+    }
+    CGFloat duration = axs_glassify_sbez_configValue(@"sbz_duration", axs_glassify_sbez_defaultDuration);
+    duration = MAX(0.05f, MIN(duration, 5.0f));
+
+    CAKeyframeAnimation *draw = [CAKeyframeAnimation animationWithKeyPath:@"strokeEnd"];
+    if (fade) {
+        draw.values = @[@0.0f, @1.0f, @1.0f, @0.0f];
+        draw.keyTimes = @[@0.0f, @0.45f, @0.6f, @1.0f];
+    } else {
+        draw.values = @[@0.0f, @1.0f];
+        draw.keyTimes = @[@0.0f, @1.0f];
+    }
+    draw.duration = fade ? duration * 1.5f : duration;
+    draw.calculationMode = kCAAnimationLinear;
+    draw.fillMode = kCAFillModeForwards;
+    draw.removedOnCompletion = NO;
+    [layer addAnimation:draw forKey:@"axs_glassify_sbez_fade"];
 }
 
 - (void)axs_glassify_sbez_animateEntrance {
+    // 轨迹只驱动 transform；装饰曲线的生长/淡出在 playDecorationDrawFade，两者独立开关。
     if (!axs_glassify_sbez_entranceActive()) {
         return;
     }
@@ -258,22 +323,6 @@ static BOOL axs_glassify_sbez_hasClaimedAncestor(UIView *view) {
                                                                          travel, duration);
     if (entrance != nil) {
         [self.layer addAnimation:entrance forKey:@"axs_glassify_sbez_entrance"];
-    }
-
-    CAShapeLayer *layer = objc_getAssociatedObject(self, &axs_glassify_sbez_keyLayer);
-    if (layer != nil) {
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        layer.strokeEnd = 1.0f;
-        [CATransaction commit];
-
-        CABasicAnimation *draw = [CABasicAnimation animationWithKeyPath:@"strokeEnd"];
-        draw.fromValue = @0.0f;
-        draw.toValue = @1.0f;
-        draw.duration = duration;
-        draw.fillMode = kCAFillModeRemoved;
-        draw.removedOnCompletion = YES;
-        [layer addAnimation:draw forKey:@"axs_glassify_sbez_draw"];
     }
 }
 
