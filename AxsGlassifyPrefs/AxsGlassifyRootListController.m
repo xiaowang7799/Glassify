@@ -278,7 +278,7 @@ static NSArray<NSString *> *axs_glassify_presetKeys(void) {
              @"sbz_scroll_effect", @"sbz_scroll_duration", @"sbz_scroll_amplitude",
              @"sbz_scroll_span", @"sbz_scroll_variation",
              @"sbz_duration", @"sbz_amplitude", @"sbz_frequency",
-             @"sbz_phase", @"sbz_width", @"sbz_opacity", @"sbz_hue";
+             @"sbz_phase", @"sbz_width", @"sbz_opacity", @"sbz_hue",
              @"auto_schedule", @"schedule_day", @"schedule_night"];
 }
 
