@@ -169,6 +169,35 @@ static BOOL axs_glassify_sbez_serpCGRectNear(CGRect a, CGRect b) {
 // 摆幅上限的钳制边距：卡片边缘离屏幕边缘至少留这么多，永远不被裁掉。
 static const CGFloat axs_glassify_sbez_serpEdgeMargin = 6.0f;
 
+// 堆叠推进（真机 v9 截图：底部同组通知叠成一摞后挤在一起，S 消失）。
+// iOS 把同组通知堆叠时各层 y 几乎相同 —— 按 y 算的相位也就相同，所有层
+// 摆向同一个 x，等于没弯。修法：数出本卡片在"同 y 堆叠组"里的层序
+// （兄弟视图中类名含 Notification、y 相差 40pt 以内、且排在本卡之前的
+// 个数），按层序推进相位：每层多走 0.2 个波长（72°），五层对称铺开
+// 160°，叠得再紧也沿 S 排开。阈值 40pt 安全：普通列表相邻卡 y 差 ≈ 卡高
+// 90+pt，不会被误认成同组。
+static NSInteger axs_glassify_sbez_serpStackIndex(UIView *cell) {
+    UIView *host = cell.superview;
+    if (host == nil) {
+        return 0;
+    }
+    CGFloat myY = cell.frame.origin.y;
+    NSInteger idx = 0;
+    for (UIView *sib in host.subviews) {
+        if (sib == cell) {
+            return idx;
+        }
+        if (fabs(sib.frame.origin.y - myY) > 40.0f) {
+            continue;
+        }
+        const char *name = object_getClassName(sib);
+        if (name != NULL && strstr(name, "Notification") != NULL) {
+            idx++;
+        }
+    }
+    return idx;
+}
+
 // 把系统交来的 frame 弯成 S：横向按 y 相位摆位，拐弯处缩小（保持中心不动)。
 // 纯函数：同一个输入永远同一个输出，所以系统重复摆位不会让画面变化。
 //
@@ -176,7 +205,7 @@ static const CGFloat axs_glassify_sbez_serpEdgeMargin = 6.0f;
 // 远"，代码负责"最多能摆多远" —— 把弯后的中心夹在 [margin+w/2, containerW-
 // margin-w/2] 里，摆幅再大也只是贴边，不会出屏。containerW<=0 表示调用方
 // 拿不到容器宽度，此时不钳制（保持纯函数语义）。
-static CGRect axs_glassify_sbez_serpBendGeometrySized(CGRect sys, CGFloat containerW) {
+static CGRect axs_glassify_sbez_serpBendGeometrySized(UIView *cell, CGRect sys, CGFloat containerW) {
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:34.0];
     CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
@@ -187,9 +216,11 @@ static CGRect axs_glassify_sbez_serpBendGeometrySized(CGRect sys, CGFloat contai
     if (sys.size.width < 1.0f || sys.size.height < 1.0f) {
         return sys;
     }
+    // 堆叠层序推进：第 k 层的相位 y 加上 k·0.22·波长（见 serpStackIndex）。
+    CGFloat phaseY = sys.origin.y + sys.size.height * 0.5f
+                   + (CGFloat)axs_glassify_sbez_serpStackIndex(cell) * wavelength * 0.20f;
     CGFloat dx, sc;
-    axs_glassify_sbez_serpGeometryForY(sys.origin.y + sys.size.height * 0.5f,
-                                       amp, wavelength, shrink, &dx, &sc);
+    axs_glassify_sbez_serpGeometryForY(phaseY, amp, wavelength, shrink, &dx, &sc);
     CGFloat w = sys.size.width * sc;
     CGFloat h = sys.size.height * sc;
     CGFloat midX = sys.origin.x + sys.size.width * 0.5f + dx;
@@ -200,11 +231,6 @@ static CGRect axs_glassify_sbez_serpBendGeometrySized(CGRect sys, CGFloat contai
     }
     return CGRectMake(midX - w * 0.5f,
                       sys.origin.y + (sys.size.height - h) * 0.5f, w, h);
-}
-
-// 旧签名：不带钳制（登记表 bootstrap 用，那里拿不到可靠容器宽度）。
-static CGRect axs_glassify_sbez_serpBendGeometry(CGRect sys) {
-    return axs_glassify_sbez_serpBendGeometrySized(sys, 0.0f);
 }
 
 // 卡片所在容器的宽度：优先 superview，退化到屏幕宽 —— 两者都只在布局
@@ -265,7 +291,7 @@ BOOL axs_glassify_sbez_serpBendFrame(UIView *cell, CGRect in, CGRect *out) {
         axs_glassify_sbez_serpFeedback++;
         return NO;
     }
-    *out = axs_glassify_sbez_serpBendGeometrySized(in, axs_glassify_sbez_serpContainerWidth(cell));
+    *out = axs_glassify_sbez_serpBendGeometrySized(cell, in, axs_glassify_sbez_serpContainerWidth(cell));
     if (axs_glassify_sbez_serpCGRectNear(*out, in)) {
         return NO;
     }
@@ -301,7 +327,9 @@ BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out) {
     CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
     CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.15];
     CGFloat dx, sc;
-    axs_glassify_sbez_serpGeometryForY(in.y, MAX(0.0f, MIN(amp, 120.0f)),
+    axs_glassify_sbez_serpGeometryForY(in.y + (CGFloat)axs_glassify_sbez_serpStackIndex(cell)
+                                       * MAX(120.0f, MIN(wavelength, 900.0f)) * 0.20f,
+                                       MAX(0.0f, MIN(amp, 120.0f)),
                                        MAX(120.0f, MIN(wavelength, 900.0f)),
                                        MAX(0.0f, MIN(shrink, 0.5f)), &dx, &sc);
     CGFloat midX = in.x + dx;
@@ -336,9 +364,9 @@ static void axs_glassify_sbez_serpRepassAllKnownLists(void) {
         if (inF == nil) {
             continue;
         }
-        CGRect bent;
         CGRect sys = inF.CGRectValue;
-        bent = axs_glassify_sbez_serpBendGeometry(sys);
+        CGRect bent = axs_glassify_sbez_serpBendGeometrySized(cell, sys,
+                                                              axs_glassify_sbez_serpContainerWidth(cell));
         if (!CGRectEqualToRect(bent, cell.frame)) {
             axs_glassify_sbez_serpWriteBegin();
             cell.frame = bent;
@@ -359,7 +387,8 @@ static void axs_glassify_sbez_serpRepassAllKnownLists(void) {
             if (objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInFrame) != nil) {
                 continue;                      // 登记表已处理
             }
-            CGRect bent = axs_glassify_sbez_serpBendGeometry(cell.frame);
+            CGRect bent = axs_glassify_sbez_serpBendGeometrySized(cell, cell.frame,
+                                                                  axs_glassify_sbez_serpContainerWidth(cell));
             if (CGRectEqualToRect(bent, cell.frame)) {
                 continue;
             }
