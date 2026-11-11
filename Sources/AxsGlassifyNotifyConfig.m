@@ -273,6 +273,13 @@ static BOOL axs_glassify_notify_bool(id value, BOOL def) {
     return [self axs_glassify_notify_sbezDoubleForKey:@"sbz_scroll_effect" defaultValue:0.0] > 0.0;
 }
 
+// 蜿蜒排列的独立开关。振幅/波长/收缩/倾转在 ListEntrance 里读，
+// 缺省必须与 AxsGlassifyRoot.plist 各行的 default 保持一致。
+- (BOOL)axs_glassify_notify_sbezSerpActive {
+    if (![self axs_glassify_notify_isEnabled]) return NO;
+    return [self axs_glassify_notify_sbezBoolForKey:@"sbz_serp_enabled" defaultValue:NO];
+}
+
 - (void)dealloc {
     CFNotificationCenterRemoveEveryObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                             (__bridge const void *)self);

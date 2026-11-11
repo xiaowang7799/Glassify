@@ -37,7 +37,27 @@
 - (void)axs_glassify_sbez_recordList;
 // Arms the "just appeared" guard and records.
 - (void)axs_glassify_sbez_noteAppeared;
+// ── S 形蜿蜒排列 ──
+// 通知列表的排版形变（不是进场动画）：每张卡片按它纵向位置落在 S 的哪个相位，
+// 决定横向摆多少、拐到波峰/波谷时缩多少、并顺轨迹切线微微倾转。静止定格，
+// 滚动时整列沿 S 流动。一次滚动事件只合并成一趟 pass，只写 cell layer 的
+// presentation transform —— 绝不写 frame / model 以外的布局状态，避免重蹈
+// 旧版「每帧改 model transform 把设备卡死」的覆辙。
+- (void)axs_glassify_sbez_serpPassQueued;
+- (void)axs_glassify_sbez_serpPassNow;
 @end
+
+#pragma mark - S 形蜿蜒排列（自由函数，ListEntrance.m 实现）
+
+// 该 view 是否正被蜿蜒排版占用 transform —— 玻璃引擎的每帧 transform 写手必须
+// 让位，否则两个所有权互相顶掉。非蜿蜒 cell 返回 NO，热路径只是读一个关联对象。
+BOOL axs_glassify_sbez_viewSerpDisplaced(UIView *view);
+
+// 面板保存后调用：刷新快速门控镜像；关闭或被重新调参时把已排版的 cell 恢复直线。
+void axs_glassify_sbez_serpPreferencesChanged(void);
+
+// 权威谓词 -> static 镜像。NotifyConfig reload 后与每趟 pass 开始时调用。
+void axs_glassify_sbez_serpUpdateGate(void);
 
 // Shared by UITableViewCell, UICollectionViewCell and — because the lock screen
 // list is really a plain UIScrollView — any view added into a *Notification* list.

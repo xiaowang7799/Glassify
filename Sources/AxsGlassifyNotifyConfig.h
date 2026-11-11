@@ -84,6 +84,11 @@
 - (BOOL)axs_glassify_notify_sbezEntranceActive;
 - (BOOL)axs_glassify_notify_sbezDecoActive;
 - (BOOL)axs_glassify_notify_sbezScrollActive;
+// S 形蜿蜒排列（排版形变，非进场动画）：静止时通知列就呈 S 蜿蜒，
+// 拐弯处缩小并顺切线倾转。可与「滚动入场特效」共存 —— 入场动画挂在
+// layer 的 CAAnimation 上，结束后表现层落回 model transform，而蜿蜒排版
+// 写的正是 model，所以卡片入场后正好落进自己的 S 位。
+- (BOOL)axs_glassify_notify_sbezSerpActive;
 // 通用读取（带类型与有限值校验，缺省回退）。
 - (BOOL)axs_glassify_notify_sbezBoolForKey:(NSString *)key defaultValue:(BOOL)defaultValue;
 - (double)axs_glassify_notify_sbezDoubleForKey:(NSString *)key defaultValue:(double)defaultValue;

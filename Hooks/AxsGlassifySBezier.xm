@@ -52,6 +52,20 @@
     %orig;
     [self axs_glassify_sbez_noteAppeared];
 }
+
+// S 形蜿蜒排列的滚动触发：setBounds: 在滚动时被调（含减速过程），
+// 一趟 pass 每 runloop 至多一次、只读配置、只写 cell layer 的 transform，
+// 不改本视图任何状态 —— 与列表布局无反馈回路（旧版死循环的根因）。
+- (void)setContentOffset:(CGPoint)contentOffset {
+    %orig;
+    [self axs_glassify_sbez_serpPassQueued];
+}
+
+- (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated {
+    %orig;
+    [self axs_glassify_sbez_serpPassQueued];
+}
+
 %end
 
 // The list may be a table or a collection, so both cell kinds are hooked. Cells are
@@ -108,6 +122,15 @@
     @autoreleasepool {
         // Readers load a snapshot; they never write default preferences.
         [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+        // 蜿蜒排列门控：首次镜像一次，之后每次配置保存刷新 + 处理关→恢复。
+        // serpPreferencesChanged 内部已含 updateGate，一个观察者足够。
+        axs_glassify_sbez_serpUpdateGate();
+        [[NSNotificationCenter defaultCenter] addObserverForName:AxsGlassifyPreferencesChanged
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *note) {
+            axs_glassify_sbez_serpPreferencesChanged();
+        }];
 
         // A fresh self-report per launch, so a stale one can never be mistaken for
         // this run's. The settings panel reads it back.

@@ -2,6 +2,8 @@
 #import "AxsGlassifyLiquid.h"
 #import "AxsGlassifyNotifyConfig.h"
 #import "AxsGlassifyPreferences.h"
+// axs_glassify_sbez_viewSerpDisplaced：蜿蜒排版占用 transform 的围栏判断。
+#import "AxsGlassifySBezier.h"
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -1259,8 +1261,11 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 
 // 只在真的不同时才写 layer.transform：读 + 比较几乎免费，写入会进 CA 事务。
 // offsetX：S 曲线滑动的当前横向偏移（pt，0 = 无偏移），叠加在缩放/倾斜之上。
+// 蜿蜒排列占用中的 cell 直接跳过：排版 pass 是这些 cell transform 的唯一写手，
+// 它写进 model 的偏移量会被这里当"脏值"抹掉，两个所有权互相顶掉就是抖动。
 - (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt offsetX:(CGFloat)offsetX toView:(UIView *)view {
     if (!view) return;
+    if (axs_glassify_sbez_viewSerpDisplaced(view)) return;
     CATransform3D desired = CATransform3DIdentity;
     if (tilt > 0) {
         desired.m34 = -1.0f / 500.0f;

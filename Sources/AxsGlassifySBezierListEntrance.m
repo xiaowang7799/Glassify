@@ -46,6 +46,105 @@ static const char axs_glassify_sbez_listKeyJustAppeared = 0;
 // Timestamp of the last effect played on a view, so the several triggers that can
 // fire for one appearance do not animate it twice.
 static const char axs_glassify_sbez_listKeyLastEffectAt = 0;
+// ── S 形蜿蜒排列 ──
+// A cell's model transform as it was *before* the serpentine pass touched it.
+// Presence of this association is also the marker "this cell is displaced", so
+// turning the effect off can restore exactly the cells it had moved.
+static const char axs_glassify_sbez_keySerpOriginal = 0;
+// One queued pass per runloop tick: layout + setContentOffset + cell-add all
+// fire several times per frame; the pass itself is idempotent, so coalescing
+// is free correctness, not an optimisation.
+static const char axs_glassify_sbez_listKeyPassQueued = 0;
+
+// Fast mirror of the config verdict, refreshed on every preferences reload and
+// at load. setBounds:/setContentOffset: are process-hot hooks: when the effect
+// is off the path must cost ONE static read and nothing else.
+static BOOL axs_glassify_sbez_serpFastOn = NO;
+
+// Weak registry of cells the serpentine displaced, so the off-edge restore can
+// reach cells already scrolled out of view. Main-thread only, like every pass.
+static NSHashTable<UIView *> *axs_glassify_sbez_serpDisplaced(void) {
+    static NSHashTable *table;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ table = [NSHashTable weakObjectsHashTable]; });
+    return table;
+}
+
+// Geometric notes (why this cannot loop the way the old per-frame version did):
+// - Nothing here writes frame/bounds/contentOffset, only layer.transform of cells
+//   the list itself reports as visible. The list never gets a reason to re-layout,
+//   so pass -> layout -> pass cycles cannot form.
+// - Every pass recomputes from the stored *original* base, so passes are
+//   idempotent; coalescing several scroll events into one pass is exact.
+// - While a cell is displaced the glass per-tick transform writer is fenced off
+//   (see AxsGlassifyNotifyAnimator applyScale), so one owner writes each
+//   cell's transform at a time; on a prefs reload the base is re-fetched, so a
+//   changed notify_scale cannot go stale.
+static void axs_glassify_sbez_serpGeometryForY(CGFloat y, CGFloat amplitude, CGFloat wavelength,
+                                               CGFloat shrink, CGFloat tiltRad,
+                                               CGFloat *outX, CGFloat *outScale, CGFloat *outRot) {
+    CGFloat phase = (CGFloat)M_PI * 2.0f * y / MAX(wavelength, 60.0f);
+    CGFloat s = sinf(phase);
+    *outX = amplitude * s;
+    // |sin| peaks at the crests/troughs where the lateral swing is maximal:
+    // a card is smallest exactly where the S turns, full-size at the crossings.
+    *outScale = 1.0f - shrink * fabsf(s);
+    // cos is the tangent's sign - the lean follows the ribbon direction.
+    *outRot = tiltRad * cosf(phase);
+}
+
+static void axs_glassify_sbez_serpRestoreCell(UIView *cell) {
+    NSValue *stored = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal);
+    if (stored == nil) {
+        return;
+    }
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    CATransform3D original = stored.CATransform3DValue;
+    if (!CATransform3DEqualToTransform(cell.layer.transform, original)) {
+        cell.layer.transform = original;
+    }
+    [CATransaction commit];
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal, nil, OBJC_ASSOCIATION_ASSIGN);
+    [axs_glassify_sbez_serpDisplaced() removeObject:cell];
+}
+
+static void axs_glassify_sbez_serpRestoreAllDisplaced(void) {
+    for (UIView *cell in [axs_glassify_sbez_serpDisplaced().allObjects copy]) {
+        axs_glassify_sbez_serpRestoreCell(cell);
+    }
+}
+
+BOOL axs_glassify_sbez_viewSerpDisplaced(UIView *view) {
+    return view != nil && objc_getAssociatedObject(view, &axs_glassify_sbez_keySerpOriginal) != nil;
+}
+
+// 纯门控镜像：必须在 NotifyConfig 每次 reload 之后调用（单写读放宽：读者最坏
+// 晚一个 runloop，且 pass 内部还会二次确认）。
+void axs_glassify_sbez_serpUpdateGate(void) {
+    axs_glassify_sbez_serpFastOn =
+        [[AxsGlassifyNotifyConfig axs_glassify_notify_shared] axs_glassify_notify_sbezSerpActive];
+}
+
+// 面板保存（主线程通知）：关→恢复直线；开/改参→也先恢复直线，下一个滚动/上新
+// 事件会重新排版。两个观察者（玻璃主配置 vs 本配置快照）重载顺序不定，所以
+// 再补一次下一 runloop 的复查；而 serpPassNow 自身的 off 分支兜底，任何一次
+// 列表事件都能自愈，不依赖这次通知。
+void axs_glassify_sbez_serpPreferencesChanged(void) {
+    axs_glassify_sbez_serpUpdateGate();
+    if (!axs_glassify_sbez_serpFastOn) {
+        // (先恢复再重烘基准是有讲究的：反过来会把旧的偏移值烘成新的"直线"基准)
+        axs_glassify_sbez_serpRestoreAllDisplaced();
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // 观察者重载顺序不定：下一拍用权威谓词再校一次，仍关就再恢复
+        // （幂等）。passNow 直接调用而非 passQueued —— 此处不在排队协议里。
+        axs_glassify_sbez_serpUpdateGate();
+        if (!axs_glassify_sbez_serpFastOn) {
+            axs_glassify_sbez_serpRestoreAllDisplaced();
+        }
+    });
+}
 
 static NSArray *axs_glassify_sbez_visibleCells(UIScrollView *scrollView) {
     if ([scrollView isKindOfClass:[UITableView class]]) {
@@ -54,7 +153,20 @@ static NSArray *axs_glassify_sbez_visibleCells(UIScrollView *scrollView) {
     if ([scrollView isKindOfClass:[UICollectionView class]]) {
         return ((UICollectionView *)scrollView).visibleCells;
     }
-    return nil;
+    // Plain scroll list (NCNotificationListView): its entries sit directly in
+    // subviews. Same strstr rule as the entrance path - no string allocs on a
+    // per-frame path, and only the list's own direct children are scanned.
+    NSMutableArray *out = nil;
+    for (UIView *sub in scrollView.subviews) {
+        const char *name = object_getClassName(sub);
+        if (name != NULL && strstr(name, "Notification") != NULL) {
+            if (out == nil) {
+                out = [NSMutableArray array];
+            }
+            [out addObject:sub];
+        }
+    }
+    return out;
 }
 
 static BOOL axs_glassify_sbez_looksLikeNotification(NSString *name) {
@@ -364,6 +476,120 @@ static CAAnimation *axs_glassify_sbez_effectAnimation(NSInteger effect,
                                      OBJC_ASSOCIATION_ASSIGN);
         }
     });
+    // 蜿蜒排列需要「刚出现就排版」：静止定格时第一眼就该是 S 形。
+    if (axs_glassify_sbez_serpFastOn) {
+        [self axs_glassify_sbez_serpPassQueued];
+    }
+}
+
+// One pass per runloop tick at most (see keyPassQueued). The pass is idempotent
+// because every target recomputes from the stored original base.
+- (void)axs_glassify_sbez_serpPassQueued {
+    if (!axs_glassify_sbez_serpFastOn) {
+        // 关闭态：只有还欠着恢复时才继续（一次哈希 count 读），passNow 会把
+        // 它们拉回直线 —— 门控镜像与快照之间的任何竞态都靠这条路兜底自愈。
+        if ([axs_glassify_sbez_serpDisplaced() count] == 0) {
+            return;
+        }
+    }
+    if (objc_getAssociatedObject(self, &axs_glassify_sbez_listKeyPassQueued) != nil) {
+        return;
+    }
+    objc_setAssociatedObject(self, &axs_glassify_sbez_listKeyPassQueued, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIScrollView *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIScrollView *list = weakSelf;
+        if (list != nil) {
+            [list axs_glassify_sbez_serpPassNow];
+        }
+    });
+}
+
+- (void)axs_glassify_sbez_serpPassNow {
+    objc_setAssociatedObject(self, &axs_glassify_sbez_listKeyPassQueued, nil,
+                             OBJC_ASSOCIATION_ASSIGN);
+    // 异步跳转之后重读一次权威谓词校正镜像：排队与执行之间面板可能已改过，
+    // 一趟 pass 内只用同一组参数，不会半新半旧。
+    axs_glassify_sbez_serpUpdateGate();
+    if (!axs_glassify_sbez_serpFastOn) {
+        // 关了：把还排着的所有 cell 恢复直线（幂等；之后 count 归零，热路径
+        // 重新回到"一次静态读"的零成本）。
+        axs_glassify_sbez_serpRestoreAllDisplaced();
+        return;
+    }
+    if (![self axs_glassify_sbez_isNotificationList]) {
+        return;
+    }
+    if (UIAccessibilityIsReduceMotionEnabled()) {
+        return;
+    }
+
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:28.0];
+    CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:260.0];
+    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.18];
+    CGFloat tiltDeg = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_tilt_deg" defaultValue:8.0];
+    amp = MAX(0.0f, MIN(amp, 120.0f));
+    wavelength = MAX(80.0f, MIN(wavelength, 800.0f));
+    shrink = MAX(0.0f, MIN(shrink, 0.5f));
+    tiltDeg = MAX(0.0f, MIN(tiltDeg, 20.0f));
+    CGFloat tiltRad = tiltDeg * (CGFloat)M_PI / 180.0f;
+
+    // visibleCells 现在对所有列表形态都有结果：table/collection 用系统的，
+    // 普通 scroll 列表（NCNotificationListView）用子视图里的 *Notification* 视图。
+    NSArray *cells = axs_glassify_sbez_visibleCells(self);
+    if (cells.count == 0) {
+        return;
+    }
+
+    for (UIView *cell in cells) {
+        CGSize size = cell.bounds.size;
+        if (size.width < 1.0f || size.height < 1.0f) {
+            continue;
+        }
+        CGPoint centre = [cell convertPoint:CGPointMake(size.width * 0.5f, size.height * 0.5f)
+                                     toView:self];
+        CGFloat x, scale, rot;
+        axs_glassify_sbez_serpGeometryForY(centre.y, amp, wavelength, shrink, tiltRad,
+                                           &x, &scale, &rot);
+
+        NSValue *stored = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal);
+
+        BOOL straight = fabs(x) < 0.5f && fabs(scale - 1.0f) < 0.003f && fabs(rot) < 0.001f;
+        if (straight) {
+            if (stored != nil) {
+                axs_glassify_sbez_serpRestoreCell(cell);
+            }
+            continue;
+        }
+
+        if (stored == nil) {
+            // Bake the current (straight) model transform as the base exactly
+            // once; glass owns this cell's transform again only after restore.
+            objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal,
+                                     [NSValue valueWithCATransform3D:cell.layer.transform],
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [axs_glassify_sbez_serpDisplaced() addObject:cell];
+            stored = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal);
+        }
+
+        CATransform3D base = stored.CATransform3DValue;
+        // base first, then scale/lean/displace around the layer anchor
+        // (anchor is the card centre by default, so scaling and rotation stay
+        // in place and x is measured in list coordinates).
+        CATransform3D local = CATransform3DScale(CATransform3DIdentity, scale, scale, 1.0);
+        local = CATransform3DRotate(local, rot, 0.0, 0.0, 1.0);
+        local = CATransform3DTranslate(local, x, 0.0, 0.0);
+        CATransform3D target = CATransform3DConcat(base, local);
+
+        if (!CATransform3DEqualToTransform(cell.layer.transform, target)) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            cell.layer.transform = target;
+            [CATransaction commit];
+        }
+    }
 }
 
 @end
@@ -399,6 +625,12 @@ static CAAnimation *axs_glassify_sbez_effectAnimation(NSInteger effect,
 }
 
 - (void)axs_glassify_sbez_applyFromList:(UIScrollView *)list {
+    // 蜿蜒排列：新出现的卡片也要参与排版（静止列表里刚加进来的那条不能是直的）。
+    // 放在最前面，因为下面的入场特效去重与档位判断都可能提前 return。
+    if (axs_glassify_sbez_serpFastOn) {
+        [list axs_glassify_sbez_serpPassQueued];
+    }
+
     // One appearance can arrive through several hooks at once: the generic view hook
     // and the table/collection cell hook both fire for a cell. Bail out before doing
     // any work at all - the row lookup below allocates, so this is worth short

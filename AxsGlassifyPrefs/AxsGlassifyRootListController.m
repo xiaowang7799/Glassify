@@ -193,6 +193,7 @@ static NSDictionary<NSString *, NSString *> *axs_glassify_sbez_migrations(void) 
         @"low_power_guard": @YES,
         @"sbz_entrance_enabled": @NO,
         @"sbz_decoration_enabled": @NO,
+        @"sbz_serp_enabled": @NO,
         @"sbz_scroll_effect": @0,
     }];
 }
@@ -222,6 +223,8 @@ static NSDictionary<NSString *, NSString *> *axs_glassify_sbez_migrations(void) 
         @"sbz_entrance_enabled": @YES,
         @"sbz_decoration_enabled": @YES,
         @"sbz_decoration_style": @0,
+        @"sbz_serp_enabled": @YES,
+        @"sbz_serp_amp": @22,
         @"appear_mode": @0,
     }];
 }
@@ -289,6 +292,8 @@ static NSArray<NSString *> *axs_glassify_presetKeys(void) {
              @"corner_radius", @"notify_opacity", @"shadow_intensity",
              @"tilt_intensity", @"notify_width", @"s_curve_amp",
              @"sbz_entrance_enabled", @"sbz_decoration_enabled", @"sbz_decoration_style", @"sbz_debug_log",
+             @"sbz_serp_enabled", @"sbz_serp_amp", @"sbz_serp_wavelength",
+             @"sbz_serp_shrink", @"sbz_serp_tilt_deg",
              @"sbz_scroll_effect", @"sbz_scroll_duration", @"sbz_scroll_amplitude",
              @"sbz_scroll_span", @"sbz_scroll_variation",
              @"sbz_duration", @"sbz_amplitude", @"sbz_frequency",
