@@ -197,6 +197,36 @@ static void axs_glassify_notify_applyScheduledPreset(void) {
 
 %hook NCNotificationListCell
 
+// ── S 形蜿蜒排列（v8 核心）：接管卡片自己的 setter ──
+// 系统（任何布局发起者）摆这张卡片最终都要经过这里。就地弯折后转交真实
+// setter，所以写者只有一个，不存在"我们写完系统又覆盖"的竞态 —— 这正是
+// v6（抢 transform 闪烁）与 v7（事后覆盖看不见）失败的根因。
+// 闸内那次 %orig 会同步重入本方法，BendFrame 靠闸标志原样放行。
+- (void)setFrame:(CGRect)frame {
+    CGRect bent;
+    if (axs_glassify_sbez_serpBendFrame((UIView *)self, frame, &bent)) {
+        axs_glassify_sbez_serpWriteBegin();
+        %orig(bent);
+        axs_glassify_sbez_serpWriteEnd();
+        return;
+    }
+    %orig;
+}
+
+// 有些布局代码走 center 而不是 frame（center 改不了尺寸，这条路上只有横向
+// 摆动，没有缩小）。两个 setter 都接管，诊断 bentF/bentC 分别计数，真机一眼
+// 看出系统实际用的是哪条路。
+- (void)setCenter:(CGPoint)center {
+    CGPoint bent;
+    if (axs_glassify_sbez_serpBendCenter((UIView *)self, center, &bent)) {
+        axs_glassify_sbez_serpWriteBegin();
+        %orig(bent);
+        axs_glassify_sbez_serpWriteEnd();
+        return;
+    }
+    %orig;
+}
+
 - (void)layoutSubviews {
     %orig;
     UIView *cell = (UIView *)self;

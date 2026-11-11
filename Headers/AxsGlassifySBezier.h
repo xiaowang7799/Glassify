@@ -39,15 +39,11 @@
 - (void)axs_glassify_sbez_noteAppeared;
 // ── S 形蜿蜒排列 ──
 // 通知列表的排版形变（不是进场动画）：每张卡片按它纵向位置落在 S 的哪个相位，
-// 决定横向摆多少、拐到波峰/波谷时缩多少、并顺轨迹切线微微倾转。静止定格，
-// 滚动时整列沿 S 流动。一次滚动事件只合并成一趟 pass，只写 cell layer 的
-// presentation transform —— 绝不写 frame / model 以外的布局状态，避免重蹈
-// 旧版「每帧改 model transform 把设备卡死」的覆辙。
+// 决定横向摆多少、拐到波峰/波谷时缩多少。静止定格也是 S 形，滚动时整列沿
+// 轨迹流动。v8：弯折发生在卡片自己的 setFrame:/setCenter:（见下面两个自由
+// 函数），列表侧的 pass 只负责"关/减弱动态"一侧的恢复自愈。
 - (void)axs_glassify_sbez_serpPassQueued;
 - (void)axs_glassify_sbez_serpPassNow;
-// 帧偏移主体：列表 layoutSubviews 之后 %orig 同步调用（同一趟布局当最后写手），
-// 滚动/上新/保存事件走 serpPassQueued 合并调用。幂等。
-- (void)axs_glassify_sbez_serpApplyFrameOffsets;
 @end
 
 #pragma mark - S 形蜿蜒排列（自由函数，ListEntrance.m 实现）
@@ -64,8 +60,14 @@ void axs_glassify_sbez_serpPreferencesChanged(void);
 // 权威谓词 -> static 镜像。NotifyConfig reload 后与每趟 pass 开始时调用。
 void axs_glassify_sbez_serpUpdateGate(void);
 
-// 快速门控读（layoutSubviews 接线用）。
-BOOL axs_glassify_sbez_serpGateOn(void);
+// v8 接管卡片 setter：系统交出坐标 -> 就地弯成 S。
+// 返回 YES 表示调用方应当 %orig(out)；NO = 原样放行。
+BOOL axs_glassify_sbez_serpBendFrame(UIView *cell, CGRect in, CGRect *out);
+BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out);
+
+// 写入闸：我们自己那次 %orig 必须包起来，防止重入二次弯折。
+void axs_glassify_sbez_serpWriteBegin(void);
+void axs_glassify_sbez_serpWriteEnd(void);
 
 #ifdef __cplusplus
 }
