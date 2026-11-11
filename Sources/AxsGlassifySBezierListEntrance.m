@@ -81,9 +81,103 @@ static NSHashTable<UIScrollView *> *axs_glassify_sbez_serpLists(void) {
     return table;
 }
 
+// 真机证据（v5：on=1 moved=134 但屏幕整齐）指向 Core Animation 的呈现值优先：
+// 锁屏给 cell 挂的 transform 动画播完后以 removedOnCompletion=NO 常驻，持续输出
+// 它自己的值；我们写的 model transform 数据上存在、画面上被盖住。
+//
+// 只清"已经完成但仍常驻"的那类（removedOnCompletion == NO）：正在播放的动画
+// 默认 removedOnCompletion == YES，不碰，所以系统自己的入场动画照常播放完。
+// 清掉后呈现值落回 model，也就是我们的位移值。
+//
+// 关闭时不需要把系统动画加回去：基准是在我们第一次碰它之前从 model 烘的，
+// 而系统设动画时通常同时把 model 写成动画终值（标准做法），所以恢复 model 后
+// 得到的正是系统原本要的那个静止值 —— 重新 addAnimation 反而会让它重播一次。
+static NSUInteger axs_glassify_sbez_serpOverrideCleared = 0;
+
+static BOOL axs_glassify_sbez_animationTouchesTransform(CAAnimation *anim) {
+    if ([anim isKindOfClass:[CAAnimationGroup class]]) {
+        for (CAAnimation *sub in ((CAAnimationGroup *)anim).animations) {
+            if (axs_glassify_sbez_animationTouchesTransform(sub)) {
+                return YES;
+            }
+        }
+        return NO;
+    }
+    if ([anim isKindOfClass:[CAPropertyAnimation class]]) {
+        NSString *kp = ((CAPropertyAnimation *)anim).keyPath;
+        // transform / transform.scale / transform.rotation.z / transform.translation
+        return kp != nil && [kp hasPrefix:@"transform"];
+    }
+    return NO;
+}
+
+static void axs_glassify_sbez_serpClearRetainedOverrides(UIView *cell) {
+    CALayer *layer = cell.layer;
+    NSArray<NSString *> *keys = layer.animationKeys;
+    if (keys.count == 0) {
+        return;
+    }
+    for (NSString *key in keys) {
+        CAAnimation *anim = [layer animationForKey:key];
+        if (anim == nil || anim.removedOnCompletion) {
+            continue;   // 正在播的、会自己消失的：不动
+        }
+        if (!axs_glassify_sbez_animationTouchesTransform(anim)) {
+            continue;
+        }
+        [layer removeAnimationForKey:key];
+        axs_glassify_sbez_serpOverrideCleared++;
+    }
+}
+
 static void axs_glassify_sbez_serpRepassAllKnownLists(void) {
     for (UIScrollView *list in [axs_glassify_sbez_serpLists().allObjects copy]) {
+        if (list.window == nil) {
+            continue;  // 不在屏的列表不排队：106 个登记表里真正有卡片的就几个
+        }
         [list axs_glassify_sbez_serpPassQueued];
+    }
+}
+
+// 4Hz 收敛定时器（真机证据）：v5 诊断 on=1 moved=134 但用户静止看到的仍是
+// 整齐 —— 排版跑过、卡片也确实被排过，但锁屏自己的出现动画/布局在**我们之后**
+// 把 cell 的 transform 重置了，而那时没有任何被动触发源再叫我们重排。
+// 谁最后写谁赢，系统写在了最后。定时器把"最后写"的间隔压到 0.25s 内：
+// 每拍只是给在屏列表排队幂等 pass（比较后才写，静止画面零图层写入、零 GPU）。
+// 只在开关开着时存在；关闭即销毁，关着的进程不背这个开销。
+static dispatch_source_t axs_glassify_sbez_serpTimer;
+
+static void axs_glassify_sbez_serpDiag(void);   // 定义在下方（读回 transform 用）
+
+static void axs_glassify_sbez_serpTimerSet(BOOL on) {
+    if (on) {
+        if (axs_glassify_sbez_serpTimer != nil) {
+            return;
+        }
+        axs_glassify_sbez_serpTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                              dispatch_get_main_queue());
+        dispatch_source_set_timer(axs_glassify_sbez_serpTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4),
+                                  NSEC_PER_SEC / 4, NSEC_PER_SEC / 10);
+        dispatch_source_set_event_handler(axs_glassify_sbez_serpTimer, ^{
+            axs_glassify_sbez_serpUpdateGate();
+            if (!axs_glassify_sbez_serpFastOn) {
+                axs_glassify_sbez_serpTimerSet(NO);
+                return;
+            }
+            axs_glassify_sbez_serpRepassAllKnownLists();
+            // 每 8 拍（约 2s）读回一次现场 transform 进诊断。放在这里而不是
+            // 每拍：sample 会随滚动变化，MergeIfChanged 只在字符串变了才落盘,
+            // 2s 一次是"能看清有没有被覆写"与"不重蹈每帧写盘"的折中。
+            static NSUInteger tickCount = 0;
+            if ((++tickCount % 8) == 0) {
+                axs_glassify_sbez_serpDiag();
+            }
+        });
+        dispatch_resume(axs_glassify_sbez_serpTimer);
+    } else if (axs_glassify_sbez_serpTimer != nil) {
+        dispatch_source_cancel(axs_glassify_sbez_serpTimer);
+        axs_glassify_sbez_serpTimer = nil;
     }
 }
 
@@ -139,26 +233,51 @@ BOOL axs_glassify_sbez_viewSerpDisplaced(UIView *view) {
     return view != nil && objc_getAssociatedObject(view, &axs_glassify_sbez_keySerpOriginal) != nil;
 }
 
-// 纯门控镜像：必须在 NotifyConfig 每次 reload 之后调用（单写读放宽：读者最坏
-// 晚一个 runloop，且 pass 内部还会二次确认）。
+// 权威谓词 -> static 镜像，并顺带维护 4Hz 收敛定时器（见 serpTimerSet 注释）。
 void axs_glassify_sbez_serpUpdateGate(void) {
     axs_glassify_sbez_serpFastOn =
         [[AxsGlassifyNotifyConfig axs_glassify_notify_shared] axs_glassify_notify_sbezSerpActive];
+    axs_glassify_sbez_serpTimerSet(axs_glassify_sbez_serpFastOn);
 }
 
 // 诊断一行（面板「S 形贝塞尔诊断」可见）：为什么没效果当场可读 —— 门控、
-// 减弱动态、已知列表数、当前位移中的卡片数。MergeIfChanged 内存去重，只在
-// 变化时落盘，调用点全在低频路径。lists=0 说明从没识别到通知列表；
-// reduce=1 说明系统「减弱动态效果」开着（设计上整体跳过）；
-// on=1 moved=0 且刚保存过，说明排版跑了但没找到可见卡片。
+// 减弱动态、已知列表数、当前位移中的卡片数，外加**头 3 张已位移卡片当前的
+// model transform 实样**（s=缩放 m11、x=平移 tx）。sample 读回 s≈1.00 x≈0
+// 而 moved>0，就是"我们写了、又被别人覆写回去"；moved=0 则是没排到卡片。
+// MergeIfChanged 内存去重，只在变化时落盘，调用点全在低频路径。
 static void axs_glassify_sbez_serpDiag(void) {
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
     NSUInteger lists = axs_glassify_sbez_serpLists().allObjects.count;
     NSUInteger moved = axs_glassify_sbez_serpDisplaced().allObjects.count;
+    NSMutableArray *samples = [NSMutableArray array];
+    NSUInteger inwin = 0, pvo = 0;
+    for (UIView *cell in axs_glassify_sbez_serpDisplaced().allObjects) {
+        if (cell.window == nil) {
+            continue;
+        }
+        inwin++;
+        CATransform3D model = cell.layer.transform;
+        CALayer *pres = cell.layer.presentationLayer;
+        // pvo = presentation-override：model 已被我们写成位移值，但屏幕上实际
+        // 生效的呈现值不是它（系统那条 transform 动画在输出自己的值）。
+        // pvo>0 就是"写了但看不见"的直接证据。
+        if (pres != nil && !CATransform3DEqualToTransform(pres.transform, model)) {
+            pvo++;
+        }
+        if (samples.count >= 3) {
+            continue;
+        }
+        [samples addObject:[NSString stringWithFormat:@"(m:%.2f/%.0f p:%.2f/%.0f)",
+                            model.m11, model.m41,
+                            pres ? pres.transform.m11 : 0.0,
+                            pres ? pres.transform.m41 : 0.0]];
+    }
     axs_glassify_sbez_diagnosticsMergeIfChanged(@"serp",
-        [NSString stringWithFormat:@"on=%d reduce=%d lists=%lu moved=%lu",
+        [NSString stringWithFormat:@"on=%d reduce=%d lists=%lu moved=%lu inwin=%lu pvo=%lu ovr=%lu sample=%@",
          (int)axs_glassify_sbez_serpFastOn, (int)reduce,
-         (unsigned long)lists, (unsigned long)moved]);
+         (unsigned long)lists, (unsigned long)moved, (unsigned long)inwin,
+         (unsigned long)pvo, (unsigned long)axs_glassify_sbez_serpOverrideCleared,
+         samples.count ? [samples componentsJoinedByString:@" "] : @"(无在屏)"]);
 }
 
 // 面板保存（主线程通知）：三种触发都必须主动重排，不能"等下一个事件"——
@@ -607,6 +726,9 @@ static CAAnimation *axs_glassify_sbez_effectAnimation(NSInteger effect,
         }
 
         if (stored == nil) {
+            // 烘基准之前先清掉常驻的 transform 覆盖动画：否则烘进去的是那条
+            // 动画的输出值（多半是 identity 之外的系统入场终值），基准就错了。
+            axs_glassify_sbez_serpClearRetainedOverrides(cell);
             // Bake the current (straight) model transform as the base exactly
             // once; glass owns this cell's transform again only after restore.
             objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal,
@@ -614,6 +736,10 @@ static CAAnimation *axs_glassify_sbez_effectAnimation(NSInteger effect,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [axs_glassify_sbez_serpDisplaced() addObject:cell];
             stored = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal);
+        } else {
+            // 已排版的卡片每拍也要清：系统随时可能又挂一条常驻 transform 动画
+            // 把我们的 model 值盖住（v5 真机 moved=134 却看不见就是这个）。
+            axs_glassify_sbez_serpClearRetainedOverrides(cell);
         }
 
         CATransform3D base = stored.CATransform3DValue;
