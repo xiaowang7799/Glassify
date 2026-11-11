@@ -1323,7 +1323,7 @@
 			<key>cellClass</key>
 			<string>AxsGlassifySliderCell</string>
 			<key>default</key>
-			<real>0.15</real>
+			<real>0.25</real>
 			<key>defaults</key>
 			<string>com.axs.glassify</string>
 			<key>key</key>
@@ -1333,7 +1333,7 @@
 			<key>min</key>
 			<real>0.0</real>
 			<key>max</key>
-			<real>0.5</real>
+			<real>0.8</real>
 		</dict>
 
 		<dict>

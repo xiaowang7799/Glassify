@@ -87,6 +87,10 @@ static const char axs_glassify_sbez_keySerpOutFrame = 0;
 static const char axs_glassify_sbez_keySerpInCenter = 0;
 static const char axs_glassify_sbez_keySerpOutCenter = 0;
 static const char axs_glassify_sbez_keySerpNoBend = 0;   // 反馈回环：该卡片不再弯
+// center 路径的缩小靠 bounds（center 本身改不了尺寸）。原始/写出的 bounds
+// 成对记录，恢复时按"仍是我们的尺寸"这一条件还原。
+static const char axs_glassify_sbez_keySerpInBounds = 0;
+static const char axs_glassify_sbez_keySerpOutBounds = 0;
 
 // 写入闸与计数。bentFrame/bentCenter 进诊断：>0 才证明系统真的走的是
 // 这个 setter（本方案唯一需要真机确认的前提）。
@@ -166,6 +170,26 @@ static BOOL axs_glassify_sbez_serpCGRectNear(CGRect a, CGRect b) {
         && fabs(a.size.width - b.size.width) < 1.0 && fabs(a.size.height - b.size.height) < 1.0;
 }
 
+// 尺寸的**唯一锚点**：首次弯折前记录的原始 bounds，没有记录才用当前值。
+// setFrame: 与 setCenter: 两条路都会改尺寸，若各自拿"当前 bounds"当基准，
+// bendFrame 缩过之后 bendCenter 再读就是缩过的值 —— 乘两次 sc，越缩越小。
+// 所有尺寸计算一律从这份原始值出发，两条路怎么先后都幂等。
+static CGSize axs_glassify_sbez_serpOriginalBounds(UIView *cell) {
+    NSValue *inB = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds);
+    if (inB != nil) {
+        return inB.CGSizeValue;
+    }
+    return cell.bounds.size;
+}
+
+static void axs_glassify_sbez_serpRememberOriginalBounds(UIView *cell) {
+    if (objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds) == nil) {
+        CGSize orig = cell.bounds.size;
+        objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds,
+                                 [NSValue valueWithCGSize:orig], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 // 摆幅上限的钳制边距：卡片边缘离屏幕边缘至少留这么多，永远不被裁掉。
 static const CGFloat axs_glassify_sbez_serpEdgeMargin = 6.0f;
 
@@ -209,28 +233,34 @@ static CGRect axs_glassify_sbez_serpBendGeometrySized(UIView *cell, CGRect sys, 
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:34.0];
     CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
-    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.15];
+    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.25];
     amp = MAX(0.0f, MIN(amp, 120.0f));
     wavelength = MAX(120.0f, MIN(wavelength, 900.0f));
-    shrink = MAX(0.0f, MIN(shrink, 0.5f));
+    shrink = MAX(0.0f, MIN(shrink, 0.8f));
     if (sys.size.width < 1.0f || sys.size.height < 1.0f) {
         return sys;
     }
-    // 堆叠层序推进：第 k 层的相位 y 加上 k·0.22·波长（见 serpStackIndex）。
+    // 堆叠层序推进：第 k 层的相位 y 加上 k·0.2·波长（见 serpStackIndex）。
     CGFloat phaseY = sys.origin.y + sys.size.height * 0.5f
                    + (CGFloat)axs_glassify_sbez_serpStackIndex(cell) * wavelength * 0.20f;
     CGFloat dx, sc;
     axs_glassify_sbez_serpGeometryForY(phaseY, amp, wavelength, shrink, &dx, &sc);
-    CGFloat w = sys.size.width * sc;
-    CGFloat h = sys.size.height * sc;
+    // 尺寸锚定原始 bounds：center 路径缩过 bounds 之后，系统交来的 frame.size
+    // 会反映缩过的尺寸，直接乘 sc 就是缩第二次。位置仍取系统交来的中心。
+    CGSize origSize = axs_glassify_sbez_serpOriginalBounds(cell);
+    if (origSize.width < 1.0f || origSize.height < 1.0f) {
+        origSize = sys.size;
+    }
+    CGFloat w = origSize.width * sc;
+    CGFloat h = origSize.height * sc;
     CGFloat midX = sys.origin.x + sys.size.width * 0.5f + dx;
+    CGFloat midY = sys.origin.y + sys.size.height * 0.5f;
     if (containerW > w + axs_glassify_sbez_serpEdgeMargin * 2.0f) {
         CGFloat lo = axs_glassify_sbez_serpEdgeMargin + w * 0.5f;
         CGFloat hi = containerW - axs_glassify_sbez_serpEdgeMargin - w * 0.5f;
         midX = MAX(lo, MIN(hi, midX));
     }
-    return CGRectMake(midX - w * 0.5f,
-                      sys.origin.y + (sys.size.height - h) * 0.5f, w, h);
+    return CGRectMake(midX - w * 0.5f, midY - h * 0.5f, w, h);
 }
 
 // 卡片所在容器的宽度：优先 superview，退化到屏幕宽 —— 两者都只在布局
@@ -263,6 +293,17 @@ static void axs_glassify_sbez_serpRestoreCell(UIView *cell) {
         cell.center = inC.CGPointValue;
         axs_glassify_sbez_serpWriteEnd();
     }
+    // bounds 同条件恢复：仍是我们的尺寸才动，避免覆盖系统的新布局。
+    NSValue *inB = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds);
+    NSValue *outB = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutBounds);
+    if (inB != nil && outB != nil && CGSizeEqualToSize(cell.bounds.size, outB.CGSizeValue)) {
+        CGSize orig = inB.CGSizeValue;
+        axs_glassify_sbez_serpWriteBegin();
+        cell.bounds = CGRectMake(0, 0, orig.width, orig.height);
+        axs_glassify_sbez_serpWriteEnd();
+    }
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutBounds, nil, OBJC_ASSOCIATION_ASSIGN);
     [axs_glassify_sbez_serpDisplaced() removeObject:cell];
 }
 
@@ -291,6 +332,10 @@ BOOL axs_glassify_sbez_serpBendFrame(UIView *cell, CGRect in, CGRect *out) {
         axs_glassify_sbez_serpFeedback++;
         return NO;
     }
+    // 尺寸锚点必须在任何缩小之前记下（首次触碰时 bounds 还是系统的原始尺寸）。
+    // bendFrame 改的是 frame.size，它会连带改 bounds.size —— 若这里不记录，
+    // 之后 bendCenter 读到的就是缩过的尺寸，会缩第二次。
+    axs_glassify_sbez_serpRememberOriginalBounds(cell);
     *out = axs_glassify_sbez_serpBendGeometrySized(cell, in, axs_glassify_sbez_serpContainerWidth(cell));
     if (axs_glassify_sbez_serpCGRectNear(*out, in)) {
         return NO;
@@ -305,8 +350,11 @@ BOOL axs_glassify_sbez_serpBendFrame(UIView *cell, CGRect in, CGRect *out) {
     return YES;
 }
 
-// setCenter: 路径：只弯横向位移（center 改不了尺寸，缩小在这条路上不生效）。
-// 两条路的计数分开上报，bentF / bentC，真机一眼看出系统用的是哪个 setter。
+// setCenter: 路径：横向位移走 center，缩小走 bounds。v10 真机反馈"拐弯处
+// 没缩小"正是因为这条路上只做了位移（center 改不了尺寸），而锁屏摆卡片
+// 恰恰走的是 center。bounds 以中心为基准改尺寸，正是想要的缩小；写入必须
+// 包在写入闸里 —— 改 bounds 会同步重入 setFrame:，不挡就会二次弯折。
+// 两条路的计数分开上报，bentF / bentC。
 BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out) {
     *out = in;
     if (!axs_glassify_sbez_serpLive() || axs_glassify_sbez_serpWriting) {
@@ -322,27 +370,58 @@ BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out) {
         axs_glassify_sbez_serpFeedback++;
         return NO;
     }
+    // 尺寸锚点：首次触碰时记录原始 bounds（与 bendFrame 共用一份，两条路
+    // 谁先来都一样）。
+    axs_glassify_sbez_serpRememberOriginalBounds(cell);
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:34.0];
     CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
-    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.15];
+    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.25];
     CGFloat dx, sc;
     axs_glassify_sbez_serpGeometryForY(in.y + (CGFloat)axs_glassify_sbez_serpStackIndex(cell)
                                        * MAX(120.0f, MIN(wavelength, 900.0f)) * 0.20f,
                                        MAX(0.0f, MIN(amp, 120.0f)),
                                        MAX(120.0f, MIN(wavelength, 900.0f)),
-                                       MAX(0.0f, MIN(shrink, 0.5f)), &dx, &sc);
+                                       MAX(0.0f, MIN(shrink, 0.8f)), &dx, &sc);
     CGFloat midX = in.x + dx;
-    CGFloat w = CGRectGetWidth(cell.bounds);
+    // 尺寸基准锚定"原始 bounds"（首次弯折前记录），不是当前 bounds ——
+    // 当前 bounds 可能已被上一次缩小改过，直接乘 sc 会缩第二次（越缩越小）。
+    CGSize inBounds = axs_glassify_sbez_serpOriginalBounds(cell);
+    CGFloat w = inBounds.width * sc;
+    CGFloat h = inBounds.height * sc;
     CGFloat containerW = axs_glassify_sbez_serpContainerWidth(cell);
     if (containerW > w + axs_glassify_sbez_serpEdgeMargin * 2.0f) {
         midX = MAX(axs_glassify_sbez_serpEdgeMargin + w * 0.5f,
                    MIN(containerW - axs_glassify_sbez_serpEdgeMargin - w * 0.5f, midX));
     }
     *out = CGPointMake(midX, in.y);
-    if (CGPointEqualToPoint(*out, in)) {
+    BOOL moved = !CGPointEqualToPoint(*out, in);
+    BOOL sized = fabs(inBounds.width - w) > 0.5 || fabs(inBounds.height - h) > 0.5;
+    if (!moved && !sized) {
         return NO;
     }
+
+    // 尺寸先落定（两条分支都要），写入包进闸内：bounds 变化会同步重入
+    // setFrame:，不挡就会在那条路径上二次弯折。原始 bounds 只记第一次。
+    if (sized) {
+        if (objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds) == nil) {
+            objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds,
+                                     [NSValue valueWithCGSize:inBounds], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutBounds,
+                                 [NSValue valueWithCGSize:CGSizeMake(w, h)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        axs_glassify_sbez_serpWriteBegin();
+        cell.bounds = CGRectMake(0, 0, w, h);
+        axs_glassify_sbez_serpWriteEnd();
+    }
+
+    if (!moved) {
+        // 只需缩小：center 不动，bounds 已写。
+        [axs_glassify_sbez_serpDisplaced() addObject:cell];
+        axs_glassify_sbez_serpBentCenter++;
+        return NO;
+    }
+
     objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInCenter,
                              [NSValue valueWithCGPoint:in], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutCenter,
