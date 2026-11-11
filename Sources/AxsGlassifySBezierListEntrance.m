@@ -70,6 +70,23 @@ static NSHashTable<UIView *> *axs_glassify_sbez_serpDisplaced(void) {
     return table;
 }
 
+// Weak registry of every scroll view this process ever recognised (recordList
+// runs once per list). When the panel turns the serpentine ON there is *no*
+// scroll, no new cell and no window event - the toggle itself is the only cue,
+// so re-passing must be driven from the known lists, not from waiting for one.
+static NSHashTable<UIScrollView *> *axs_glassify_sbez_serpLists(void) {
+    static NSHashTable *table;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ table = [NSHashTable weakObjectsHashTable]; });
+    return table;
+}
+
+static void axs_glassify_sbez_serpRepassAllKnownLists(void) {
+    for (UIScrollView *list in [axs_glassify_sbez_serpLists().allObjects copy]) {
+        [list axs_glassify_sbez_serpPassQueued];
+    }
+}
+
 // Geometric notes (why this cannot loop the way the old per-frame version did):
 // - Nothing here writes frame/bounds/contentOffset, only layer.transform of cells
 //   the list itself reports as visible. The list never gets a reason to re-layout,
@@ -129,24 +146,46 @@ void axs_glassify_sbez_serpUpdateGate(void) {
         [[AxsGlassifyNotifyConfig axs_glassify_notify_shared] axs_glassify_notify_sbezSerpActive];
 }
 
-// 面板保存（主线程通知）：关→恢复直线；开/改参→也先恢复直线，下一个滚动/上新
-// 事件会重新排版。两个观察者（玻璃主配置 vs 本配置快照）重载顺序不定，所以
-// 再补一次下一 runloop 的复查；而 serpPassNow 自身的 off 分支兜底，任何一次
-// 列表事件都能自愈，不依赖这次通知。
+// 诊断一行（面板「S 形贝塞尔诊断」可见）：为什么没效果当场可读 —— 门控、
+// 减弱动态、已知列表数、当前位移中的卡片数。MergeIfChanged 内存去重，只在
+// 变化时落盘，调用点全在低频路径。lists=0 说明从没识别到通知列表；
+// reduce=1 说明系统「减弱动态效果」开着（设计上整体跳过）；
+// on=1 moved=0 且刚保存过，说明排版跑了但没找到可见卡片。
+static void axs_glassify_sbez_serpDiag(void) {
+    BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
+    NSUInteger lists = axs_glassify_sbez_serpLists().allObjects.count;
+    NSUInteger moved = axs_glassify_sbez_serpDisplaced().allObjects.count;
+    axs_glassify_sbez_diagnosticsMergeIfChanged(@"serp",
+        [NSString stringWithFormat:@"on=%d reduce=%d lists=%lu moved=%lu",
+         (int)axs_glassify_sbez_serpFastOn, (int)reduce,
+         (unsigned long)lists, (unsigned long)moved]);
+}
+
+// 面板保存（主线程通知）：三种触发都必须主动重排，不能"等下一个事件"——
+// 用户在设置页打开开关再回锁屏时，列表早已在窗口、没有新卡片、也不会滚动，
+// 没有任何被动触发源会命中（这正是真机"静止仍整齐"的根因）。
+//
+// 快照竞态：本通知由主配置发出；本模块用的 NotifyConfig 快照在另一条串行队列
+// 重载，此刻可能还是旧值（没人再发第二条通知）。所以连拍四下（当拍 / 下一拍 /
+// 0.12s / 0.4s），每拍用权威谓词重校门控；0.4s 那拍同时盖住"列表刚出现、cell
+// 还没挂上"的挂载竞态。恢复-重排顺序有讲究：先恢复直线再重烘基准，反过来会把
+// 旧偏移烘成新基准。
 void axs_glassify_sbez_serpPreferencesChanged(void) {
-    axs_glassify_sbez_serpUpdateGate();
-    if (!axs_glassify_sbez_serpFastOn) {
-        // (先恢复再重烘基准是有讲究的：反过来会把旧的偏移值烘成新的"直线"基准)
-        axs_glassify_sbez_serpRestoreAllDisplaced();
-    }
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // 观察者重载顺序不定：下一拍用权威谓词再校一次，仍关就再恢复
-        // （幂等）。passNow 直接调用而非 passQueued —— 此处不在排队协议里。
+    void (^tick)(void) = ^{
         axs_glassify_sbez_serpUpdateGate();
-        if (!axs_glassify_sbez_serpFastOn) {
+        if (axs_glassify_sbez_serpFastOn) {
+            axs_glassify_sbez_serpRepassAllKnownLists();
+        } else {
             axs_glassify_sbez_serpRestoreAllDisplaced();
         }
-    });
+        axs_glassify_sbez_serpDiag();
+    };
+    tick();
+    dispatch_async(dispatch_get_main_queue(), ^{ tick(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ tick(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ tick(); });
 }
 
 static NSArray *axs_glassify_sbez_visibleCells(UIScrollView *scrollView) {
@@ -393,6 +432,8 @@ static CAAnimation *axs_glassify_sbez_effectAnimation(NSInteger effect,
     }
     objc_setAssociatedObject(self, &axs_glassify_sbez_listKeyLogged, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // 蜿蜒的「已知列表」登记处：recordList 每个列表只跑一次，这里加一次弱引用。
+    [axs_glassify_sbez_serpLists() addObject:self];
 
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     NSArray *cells = axs_glassify_sbez_visibleCells(self);
@@ -515,16 +556,14 @@ static CAAnimation *axs_glassify_sbez_effectAnimation(NSInteger effect,
     // 异步跳转之后重读一次权威谓词校正镜像：排队与执行之间面板可能已改过，
     // 一趟 pass 内只用同一组参数，不会半新半旧。
     axs_glassify_sbez_serpUpdateGate();
-    if (!axs_glassify_sbez_serpFastOn) {
-        // 关了：把还排着的所有 cell 恢复直线（幂等；之后 count 归零，热路径
-        // 重新回到"一次静态读"的零成本）。
+    // 两种"本效果不生效"的状态（关开关 / 系统减弱动态）都恢复直线：
+    // 减弱动态开着时卡片也必须笔直，不能出现"开一半歪一半"。恢复幂等，
+    // 之后 displaced 归零，热路径回到一次静态读的零成本。
+    if (!axs_glassify_sbez_serpFastOn || UIAccessibilityIsReduceMotionEnabled()) {
         axs_glassify_sbez_serpRestoreAllDisplaced();
         return;
     }
     if (![self axs_glassify_sbez_isNotificationList]) {
-        return;
-    }
-    if (UIAccessibilityIsReduceMotionEnabled()) {
         return;
     }
 

@@ -124,5 +124,11 @@ static inline NSString *axs_glassify_sbez_diagnosticsReport(void) {
         [lines addObject:@"识别到的列表：0（hook 没有在滚动视图/cell 上触发）"];
     }
     [lines addObject:[NSString stringWithFormat:@"最后一次播放：%@", values[@"lastEffect"] ?: @"（还没有）"]];
+    // 蜿蜒排版的现场状态；异常一眼可读：lists=0 从没识别到列表、reduce=1 系统
+    // 减弱动态开着（整体静默跳过）、on=1 moved=0 刚保存过但没排到卡片。
+    NSString *serp = values[@"serp"];
+    if ([serp isKindOfClass:[NSString class]] && serp.length > 0) {
+        [lines addObject:[@"蜿蜒排版：" stringByAppendingString:serp]];
+    }
     return [lines componentsJoinedByString:@"\n"];
 }

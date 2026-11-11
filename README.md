@@ -48,10 +48,11 @@
 
 实现要点（这里埋过旧版的雷，逐条防住）：
 
-- **无反馈回路**：旧版死循环的根因是"每帧改 model transform + 在布局回调里做"。本版只挂三个触发源（`setContentOffset:` ×2、cell `didMoveToSuperview`、列表 `didMoveToWindow`），每 runloop 合并成一趟幂等 pass；pass 只读配置、只写 cell 的 `layer.transform`，**不写 frame/bounds/contentOffset** —— 列表拿不到任何"再布局一次"的理由。
+- **触发源只有四个，其中"面板开关"是主动的**：`setContentOffset:` ×2（滚动）、cell 挂载、列表进窗口，加上**配置保存时对全部已知列表主动重排**（连拍当拍/下一拍/0.12s/0.4s 四下，盖住"设置里打开开关回锁屏时没有任何被动事件"和"列表刚出现 cell 还没挂上"两类竞态——真机第一次就栽在这上面）。已知列表登记在弱引用表里，由 recordList 每个列表填一次。
 - **单一所有权**：被排版的 cell 打上关联对象标记；玻璃引擎的每帧 transform 写手（`applyScale`）看到标记直接跳过（围栏函数 `axs_glassify_sbez_viewSerpDisplaced`）。关开关/改参数时全部恢复直线并重烘基准，`notify_scale`/`tilt` 由玻璃照常拥有。
 - **关闭零开销**：门控镜像是一个 static BOOL（配置重载时刷新，pass 开始时二次校验自愈竞态）；关着时热 hook 的成本 = 一次静态读 + 返回。
-- **尊重「减弱动态效果」**，和入场特效同一守卫；静止时零定时器、零 GPU（定格在 layer transform 上，不是每帧重绘）。
+- **尊重「减弱动态效果」**：开着时不但跳过，还会把已排版的卡片恢复直线（面板诊断会显示 `reduce=1`）；静止时零定时器、零 GPU（定格在 layer transform 上，不是每帧重绘）。
+- **现场可读**：面板「S 形贝塞尔诊断」多一行 `蜿蜒排版：on=… reduce=… lists=… moved=…`。静止仍整齐时按这个读：`lists=0` = 从没识别到通知列表（要换 hook 点）；`reduce=1` = 系统开关挡着；`on=1 moved=0` = 排版跑了但没抓到可见卡片。
 
 滚动入场特效与蜿蜒**可共存**：入场是 layer 上的 CAAnimation（播完落回 model），蜿蜒写的正是 model —— 卡片一边播入场动画一边已经站在自己的 S 位上，动画结束自然落位。
 
