@@ -49,6 +49,12 @@
 
 #pragma mark - S 形蜿蜒排列（自由函数，ListEntrance.m 实现）
 
+// The .xm hooks compile as C++ (.mm) under Theos; these plain-C functions live
+// in a .m, so without extern "C" the linker looks for a mangled name and fails.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // 该 view 是否正被蜿蜒排版占用 transform —— 玻璃引擎的每帧 transform 写手必须
 // 让位，否则两个所有权互相顶掉。非蜿蜒 cell 返回 NO，热路径只是读一个关联对象。
 BOOL axs_glassify_sbez_viewSerpDisplaced(UIView *view);
@@ -58,6 +64,10 @@ void axs_glassify_sbez_serpPreferencesChanged(void);
 
 // 权威谓词 -> static 镜像。NotifyConfig reload 后与每趟 pass 开始时调用。
 void axs_glassify_sbez_serpUpdateGate(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 // Shared by UITableViewCell, UICollectionViewCell and — because the lock screen
 // list is really a plain UIScrollView — any view added into a *Notification* list.
