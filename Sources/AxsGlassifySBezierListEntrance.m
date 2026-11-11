@@ -285,13 +285,13 @@ static BOOL axs_glassify_sbez_serpRetainedTransform(CALayer *layer) {
             continue;
         }
         if ([a isKindOfClass:[CAPropertyAnimation class]] &&
-            [(CAPropertyAnimation *)a keyPath].hasPrefix:@"transform")) {
+            [[(CAPropertyAnimation *)a keyPath] hasPrefix:@"transform"]) {
             return YES;
         }
         if ([a isKindOfClass:[CAAnimationGroup class]]) {
             for (CAAnimation *s in ((CAAnimationGroup *)a).animations) {
                 if ([s isKindOfClass:[CAPropertyAnimation class]] &&
-                    [(CAPropertyAnimation *)s keyPath].hasPrefix:@"transform")) {
+                    [[(CAPropertyAnimation *)s keyPath] hasPrefix:@"transform"]) {
                     return YES;
                 }
             }
