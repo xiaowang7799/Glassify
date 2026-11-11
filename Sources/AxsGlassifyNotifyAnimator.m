@@ -2,6 +2,8 @@
 #import "AxsGlassifyLiquid.h"
 #import "AxsGlassifyNotifyConfig.h"
 #import "AxsGlassifyPreferences.h"
+// axs_glassify_sbez_viewSerpScaled：蜿蜒缩放占用 transform 的围栏判断。
+#import "AxsGlassifySBezier.h"
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -1259,10 +1261,12 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 
 // 只在真的不同时才写 layer.transform：读 + 比较几乎免费，写入会进 CA 事务。
 // offsetX：S 曲线滑动的当前横向偏移（pt，0 = 无偏移），叠加在缩放/倾斜之上。
-// v7：蜿蜒只写 frame，不再占用 transform，玻璃照常写缩放/倾斜 —— 两者在
-// presentation 层自然合成（frame 位移 × transform 缩放），互不覆盖。
+// v12：蜿蜒的视觉缩小又回到 transform（bounds 法真机无效 —— 只缩外框，
+// 卡片内容不跟随）。被缩放的 cell 这里必须让位：两个写手互顶就是 v6 式抖动。
+// 未被缩放的卡片照旧，玻璃的 notify_scale/tilt 不受影响。
 - (void)axs_glassify_notify_applyScale:(double)scale tilt:(double)tilt offsetX:(CGFloat)offsetX toView:(UIView *)view {
     if (!view) return;
+    if (axs_glassify_sbez_viewSerpScaled(view)) return;
     CATransform3D desired = CATransform3DIdentity;
     if (tilt > 0) {
         desired.m34 = -1.0f / 500.0f;

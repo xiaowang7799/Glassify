@@ -69,6 +69,10 @@ BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out);
 void axs_glassify_sbez_serpWriteBegin(void);
 void axs_glassify_sbez_serpWriteEnd(void);
 
+// v12：该 view 的 transform 正被蜿蜒缩放占用 —— 玻璃引擎的每帧 transform
+// 写手必须让位，否则两个写手互相顶就是抖动（v6 教训）。
+BOOL axs_glassify_sbez_viewSerpScaled(UIView *view);
+
 #ifdef __cplusplus
 }
 #endif

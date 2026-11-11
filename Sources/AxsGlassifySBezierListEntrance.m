@@ -87,10 +87,13 @@ static const char axs_glassify_sbez_keySerpOutFrame = 0;
 static const char axs_glassify_sbez_keySerpInCenter = 0;
 static const char axs_glassify_sbez_keySerpOutCenter = 0;
 static const char axs_glassify_sbez_keySerpNoBend = 0;   // 反馈回环：该卡片不再弯
-// center 路径的缩小靠 bounds（center 本身改不了尺寸）。原始/写出的 bounds
-// 成对记录，恢复时按"仍是我们的尺寸"这一条件还原。
-static const char axs_glassify_sbez_keySerpInBounds = 0;
-static const char axs_glassify_sbez_keySerpOutBounds = 0;
+// v12：bounds 缩小真机无效（cell 的子视图不跟随 bounds 重排，画面没变）。
+// 视觉缩小改走 layer.transform 的均匀缩放（整个子树一起缩），并配"呈现值
+// 守卫"：卡片 layer 上若挂着常驻 transform 动画（v6 闪源头），跳过不碰。
+static const char axs_glassify_sbez_keySerpInTransform = 0;
+static const char axs_glassify_sbez_keySerpOutTransform = 0;
+static const char axs_glassify_sbez_keySerpAnimVerdict = 0;  // NSNumber: 有常驻 transform 动画
+static volatile NSUInteger axs_glassify_sbez_serpSkippedAnim = 0;
 
 // 写入闸与计数。bentFrame/bentCenter 进诊断：>0 才证明系统真的走的是
 // 这个 setter（本方案唯一需要真机确认的前提）。
@@ -170,26 +173,6 @@ static BOOL axs_glassify_sbez_serpCGRectNear(CGRect a, CGRect b) {
         && fabs(a.size.width - b.size.width) < 1.0 && fabs(a.size.height - b.size.height) < 1.0;
 }
 
-// 尺寸的**唯一锚点**：首次弯折前记录的原始 bounds，没有记录才用当前值。
-// setFrame: 与 setCenter: 两条路都会改尺寸，若各自拿"当前 bounds"当基准，
-// bendFrame 缩过之后 bendCenter 再读就是缩过的值 —— 乘两次 sc，越缩越小。
-// 所有尺寸计算一律从这份原始值出发，两条路怎么先后都幂等。
-static CGSize axs_glassify_sbez_serpOriginalBounds(UIView *cell) {
-    NSValue *inB = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds);
-    if (inB != nil) {
-        return inB.CGSizeValue;
-    }
-    return cell.bounds.size;
-}
-
-static void axs_glassify_sbez_serpRememberOriginalBounds(UIView *cell) {
-    if (objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds) == nil) {
-        CGSize orig = cell.bounds.size;
-        objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds,
-                                 [NSValue valueWithCGSize:orig], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
 // 摆幅上限的钳制边距：卡片边缘离屏幕边缘至少留这么多，永远不被裁掉。
 static const CGFloat axs_glassify_sbez_serpEdgeMargin = 6.0f;
 
@@ -222,7 +205,24 @@ static NSInteger axs_glassify_sbez_serpStackIndex(UIView *cell) {
     return idx;
 }
 
-// 把系统交来的 frame 弯成 S：横向按 y 相位摆位，拐弯处缩小（保持中心不动)。
+// 拐弯处的缩放系数：与摆位同一套几何（相位含堆叠层序推进），保证"摆到
+// 最外=缩到最小"。返回值恒 >0；shrink=0 时为 1（不缩）。
+static CGFloat axs_glassify_sbez_serpScaleForCell(UIView *cell, CGRect sys) {
+    AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
+    CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
+    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.25];
+    CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:34.0];
+    wavelength = MAX(120.0f, MIN(wavelength, 900.0f));
+    shrink = MAX(0.0f, MIN(shrink, 0.8f));
+    amp = MAX(0.0f, MIN(amp, 120.0f));
+    CGFloat phaseY = sys.origin.y + sys.size.height * 0.5f
+                   + (CGFloat)axs_glassify_sbez_serpStackIndex(cell) * wavelength * 0.20f;
+    CGFloat dx, sc;
+    axs_glassify_sbez_serpGeometryForY(phaseY, amp, wavelength, shrink, &dx, &sc);
+    return sc;
+}
+
+// 把系统交来的 frame 弯成 S：横向按 y 相位摆位，缩小由 transform 完成。
 // 纯函数：同一个输入永远同一个输出，所以系统重复摆位不会让画面变化。
 //
 // 边缘钳制（真机截图反馈：摆幅拉满时卡片被屏幕边裁掉）：滑条只管"想摆多
@@ -245,14 +245,10 @@ static CGRect axs_glassify_sbez_serpBendGeometrySized(UIView *cell, CGRect sys, 
                    + (CGFloat)axs_glassify_sbez_serpStackIndex(cell) * wavelength * 0.20f;
     CGFloat dx, sc;
     axs_glassify_sbez_serpGeometryForY(phaseY, amp, wavelength, shrink, &dx, &sc);
-    // 尺寸锚定原始 bounds：center 路径缩过 bounds 之后，系统交来的 frame.size
-    // 会反映缩过的尺寸，直接乘 sc 就是缩第二次。位置仍取系统交来的中心。
-    CGSize origSize = axs_glassify_sbez_serpOriginalBounds(cell);
-    if (origSize.width < 1.0f || origSize.height < 1.0f) {
-        origSize = sys.size;
-    }
-    CGFloat w = origSize.width * sc;
-    CGFloat h = origSize.height * sc;
+    // v12：这里只算横向摆位；缩小由 transform 完成（见 serpApplyScale），
+    // 因为改 bounds/frame 尺寸真机无效 —— 卡片内部内容不跟随重排。
+    CGFloat w = sys.size.width;
+    CGFloat h = sys.size.height;
     CGFloat midX = sys.origin.x + sys.size.width * 0.5f + dx;
     CGFloat midY = sys.origin.y + sys.size.height * 0.5f;
     if (containerW > w + axs_glassify_sbez_serpEdgeMargin * 2.0f) {
@@ -274,14 +270,105 @@ static CGFloat axs_glassify_sbez_serpContainerWidth(UIView *cell) {
     return w;
 }
 
+// 该 layer 是否挂着"常驻不删"的 transform 动画（removedOnCompletion == NO）。
+// v6 的教训：这种动画的呈现值优先于 model，我们写进去的缩放根本不上屏；
+// 而把它删掉就会让画面跳一下 —— 满屏闪烁就是这么来的。所以这次既不写也
+// 不删：判定为有的卡片直接跳过缩小，只保留横向摆动，并计入诊断 skipA=。
+static BOOL axs_glassify_sbez_serpRetainedTransform(CALayer *layer) {
+    NSArray<NSString *> *keys = layer.animationKeys;
+    if (keys.count == 0) {
+        return NO;
+    }
+    for (NSString *key in keys) {
+        CAAnimation *a = [layer animationForKey:key];
+        if (a == nil || a.removedOnCompletion) {
+            continue;
+        }
+        if ([a isKindOfClass:[CAPropertyAnimation class]] &&
+            [(CAPropertyAnimation *)a keyPath].hasPrefix:@"transform")) {
+            return YES;
+        }
+        if ([a isKindOfClass:[CAAnimationGroup class]]) {
+            for (CAAnimation *s in ((CAAnimationGroup *)a).animations) {
+                if ([s isKindOfClass:[CAPropertyAnimation class]] &&
+                    [(CAPropertyAnimation *)s keyPath].hasPrefix:@"transform")) {
+                    return YES;
+                }
+            }
+        }
+    }
+    return NO;
+}
+
+// 视觉缩小 = layer.transform 均匀缩放（以锚点即卡片中心为基准）。
+// 为什么不用 bounds/frame 尺寸：v11 真机证明改 bounds 只缩外框，卡片内容
+// （内部的 ShortLook 视图）不跟随重排，画面上看不出任何变化。transform 缩放
+// 整个渲染子树，不需要卡片配合。
+// 锚点规则同尺寸：只在首次写入前记 model transform 为基准，之后每趟从基准
+// 重新乘 sc，永不叠乘。
+static void axs_glassify_sbez_serpApplyScale(UIView *cell, CGFloat sc) {
+    CALayer *layer = cell.layer;
+    NSNumber *verdict = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpAnimVerdict);
+    if (verdict == nil) {
+        BOOL has = axs_glassify_sbez_serpRetainedTransform(layer);
+        verdict = @(has);
+        objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpAnimVerdict, verdict,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (has) {
+            axs_glassify_sbez_serpSkippedAnim++;
+        }
+    }
+    if (verdict.boolValue) {
+        return;
+    }
+
+    NSValue *outT = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutTransform);
+    if (outT == nil) {
+        // 首次：当前 model transform 就是基准（可能是玻璃写的缩放/倾斜，
+        // 复用它而不是丢掉）。
+        objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInTransform,
+                                 [NSValue valueWithCATransform3D:layer.transform],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    CATransform3D base = [objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInTransform)
+                          CATransform3DValue];
+    CATransform3D target = CATransform3DScale(base, sc, sc, 1.0);
+    if (!CATransform3DEqualToTransform(layer.transform, target)) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        layer.transform = target;
+        [CATransaction commit];
+    }
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutTransform,
+                             [NSValue valueWithCATransform3D:target], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// 玻璃引擎围栏：蜿蜒缩放过 transform 的卡片，动画引擎不得再写它 —— 两个
+// 写手互相顶就是抖动。
+BOOL axs_glassify_sbez_viewSerpScaled(UIView *view) {
+    return view != nil && objc_getAssociatedObject(view, &axs_glassify_sbez_keySerpOutTransform) != nil;
+}
+
 static void axs_glassify_sbez_serpDiag(void);
 
 static void axs_glassify_sbez_serpRestoreCell(UIView *cell) {
+    // 顺序有讲究：transform 存在时 `cell.frame` 返回的是**视觉矩形**（bounds 经过
+    // transform 的结果），拿它和"我们写过的 frame"比会不相等，位移就恢复不掉。
+    // 所以先撤缩放，再比再恢复 frame/center。
+    NSValue *inT = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInTransform);
+    NSValue *outT = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutTransform);
+    if (inT != nil && outT != nil
+        && CATransform3DEqualToTransform(cell.layer.transform, outT.CATransform3DValue)) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        cell.layer.transform = inT.CATransform3DValue;
+        [CATransaction commit];
+    }
     NSValue *inF = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInFrame);
-    NSValue *outF = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutFrame);
+    NSValue *wantF = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutFrame);
     // 只有当前 frame 仍是我们写出去的那个值时才恢复 —— 系统已经自己改过
     // 就别去打断它（也避免把系统的最新布局当成"我们的"给抹掉）。
-    if (inF != nil && outF != nil && axs_glassify_sbez_serpCGRectNear(cell.frame, outF.CGRectValue)) {
+    if (inF != nil && wantF != nil && axs_glassify_sbez_serpCGRectNear(cell.frame, wantF.CGRectValue)) {
         axs_glassify_sbez_serpWriteBegin();
         cell.frame = inF.CGRectValue;
         axs_glassify_sbez_serpWriteEnd();
@@ -293,17 +380,10 @@ static void axs_glassify_sbez_serpRestoreCell(UIView *cell) {
         cell.center = inC.CGPointValue;
         axs_glassify_sbez_serpWriteEnd();
     }
-    // bounds 同条件恢复：仍是我们的尺寸才动，避免覆盖系统的新布局。
-    NSValue *inB = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds);
-    NSValue *outB = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutBounds);
-    if (inB != nil && outB != nil && CGSizeEqualToSize(cell.bounds.size, outB.CGSizeValue)) {
-        CGSize orig = inB.CGSizeValue;
-        axs_glassify_sbez_serpWriteBegin();
-        cell.bounds = CGRectMake(0, 0, orig.width, orig.height);
-        axs_glassify_sbez_serpWriteEnd();
-    }
-    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds, nil, OBJC_ASSOCIATION_ASSIGN);
-    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutBounds, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInTransform, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutTransform, nil, OBJC_ASSOCIATION_ASSIGN);
+    // 动画判定一并作废：下次弯折重新检查（系统可能已撤掉那条常驻动画）。
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpAnimVerdict, nil, OBJC_ASSOCIATION_ASSIGN);
     [axs_glassify_sbez_serpDisplaced() removeObject:cell];
 }
 
@@ -332,12 +412,18 @@ BOOL axs_glassify_sbez_serpBendFrame(UIView *cell, CGRect in, CGRect *out) {
         axs_glassify_sbez_serpFeedback++;
         return NO;
     }
-    // 尺寸锚点必须在任何缩小之前记下（首次触碰时 bounds 还是系统的原始尺寸）。
-    // bendFrame 改的是 frame.size，它会连带改 bounds.size —— 若这里不记录，
-    // 之后 bendCenter 读到的就是缩过的尺寸，会缩第二次。
-    axs_glassify_sbez_serpRememberOriginalBounds(cell);
     *out = axs_glassify_sbez_serpBendGeometrySized(cell, in, axs_glassify_sbez_serpContainerWidth(cell));
-    if (axs_glassify_sbez_serpCGRectNear(*out, in)) {
+    axs_glassify_sbez_serpApplyScale(cell, axs_glassify_sbez_serpScaleForCell(cell, in));
+    BOOL moved = !axs_glassify_sbez_serpCGRectNear(*out, in);
+    // 过中线附近 dx≈0（frame 不动）但缩放仍生效：这一支也必须登记，否则
+    // 关开关时恢复循环找不到它，卡片会一直缩着。
+    BOOL scaled = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutTransform) != nil;
+    if (!moved && !scaled) {
+        return NO;
+    }
+    [axs_glassify_sbez_serpDisplaced() addObject:cell];
+    if (!moved) {
+        axs_glassify_sbez_serpBentFrame++;
         return NO;
     }
     // 铁律 2：基准 = 系统交进来的 in，绝不从 cell.frame 回推。
@@ -345,7 +431,6 @@ BOOL axs_glassify_sbez_serpBendFrame(UIView *cell, CGRect in, CGRect *out) {
                              [NSValue valueWithCGRect:in], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutFrame,
                              [NSValue valueWithCGRect:*out], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [axs_glassify_sbez_serpDisplaced() addObject:cell];
     axs_glassify_sbez_serpBentFrame++;
     return YES;
 }
@@ -370,9 +455,6 @@ BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out) {
         axs_glassify_sbez_serpFeedback++;
         return NO;
     }
-    // 尺寸锚点：首次触碰时记录原始 bounds（与 bendFrame 共用一份，两条路
-    // 谁先来都一样）。
-    axs_glassify_sbez_serpRememberOriginalBounds(cell);
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:34.0];
     CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
@@ -384,39 +466,23 @@ BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out) {
                                        MAX(120.0f, MIN(wavelength, 900.0f)),
                                        MAX(0.0f, MIN(shrink, 0.8f)), &dx, &sc);
     CGFloat midX = in.x + dx;
-    // 尺寸基准锚定"原始 bounds"（首次弯折前记录），不是当前 bounds ——
-    // 当前 bounds 可能已被上一次缩小改过，直接乘 sc 会缩第二次（越缩越小）。
-    CGSize inBounds = axs_glassify_sbez_serpOriginalBounds(cell);
-    CGFloat w = inBounds.width * sc;
-    CGFloat h = inBounds.height * sc;
     CGFloat containerW = axs_glassify_sbez_serpContainerWidth(cell);
+    CGFloat w = CGRectGetWidth(cell.bounds);
     if (containerW > w + axs_glassify_sbez_serpEdgeMargin * 2.0f) {
         midX = MAX(axs_glassify_sbez_serpEdgeMargin + w * 0.5f,
                    MIN(containerW - axs_glassify_sbez_serpEdgeMargin - w * 0.5f, midX));
     }
     *out = CGPointMake(midX, in.y);
+    // v12：缩小走 transform 缩放。v11 的 bounds 法真机无效 —— 改 bounds 只缩
+    // 外框，卡片内容（内部 ShortLook 视图）不跟随重排，画面上看不出变化。
+    axs_glassify_sbez_serpApplyScale(cell, sc);
     BOOL moved = !CGPointEqualToPoint(*out, in);
-    BOOL sized = fabs(inBounds.width - w) > 0.5 || fabs(inBounds.height - h) > 0.5;
-    if (!moved && !sized) {
+    BOOL scaled = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOutTransform) != nil;
+    if (!moved && !scaled) {
         return NO;
     }
-
-    // 尺寸先落定（两条分支都要），写入包进闸内：bounds 变化会同步重入
-    // setFrame:，不挡就会在那条路径上二次弯折。原始 bounds 只记第一次。
-    if (sized) {
-        if (objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds) == nil) {
-            objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpInBounds,
-                                     [NSValue valueWithCGSize:inBounds], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOutBounds,
-                                 [NSValue valueWithCGSize:CGSizeMake(w, h)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        axs_glassify_sbez_serpWriteBegin();
-        cell.bounds = CGRectMake(0, 0, w, h);
-        axs_glassify_sbez_serpWriteEnd();
-    }
-
     if (!moved) {
-        // 只需缩小：center 不动，bounds 已写。
+        // 只需缩小：center 不动，transform 已缩放。
         [axs_glassify_sbez_serpDisplaced() addObject:cell];
         axs_glassify_sbez_serpBentCenter++;
         return NO;
@@ -515,22 +581,25 @@ static void axs_glassify_sbez_serpDiag(void) {
         }
         NSValue *inF = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpInFrame);
         CGRect f = cell.frame, b = inF.CGRectValue;
-        // (dx,k)=当前 frame 相对系统交进来的原值的横向位移与宽比。
-        // dx!=0 而肉眼仍是直线 => 外层又改写了一次（那就要连外层一起接管）。
-        [samples addObject:[NSString stringWithFormat:@"(dx=%.0f dy=%.0f k=%.2f)",
-                            f.origin.x - b.origin.x, f.origin.y - b.origin.y,
-                            b.size.width > 0 ? f.size.width / b.size.width : 0.0]];
+        // v12：dx=横向摆位（相对系统交来的原值），s=transform 的实际缩放。
+        // dx!=0 而肉眼仍是直线 => 外层又改写了一次（要连外层一起接管）；
+        // s 恒为 1.00 => 缩放被动画守卫挡下（看 skipA）或 shrink 为 0。
+        CGFloat s = cell.layer.transform.m11;
+        [samples addObject:[NSString stringWithFormat:@"(dx=%.0f dy=%.0f s=%.2f)",
+                            f.origin.x - b.origin.x, f.origin.y - b.origin.y, s]];
     }
-    // bentF / bentC 是本轮的判据：都为 0 => 系统根本没走这两个 setter,
-    // 需要换接管点（外层容器 / 图层 position）；只 bentC>0 => 尺寸缩小
-    // 在这条路上无效，观感会只有横向摆动。
+    // bentF / bentC 是本轮的判据：都为 0 => 系统根本没走这两个 setter。
+    // skipA>0 => 这些卡片挂着常驻 transform 动画，为不重演 v6 闪烁而跳过
+    // 缩放（只摆位不缩小）；若 skipA≈cells，说明缩小这条路被系统动画全面
+    // 挡住，得改成"缩放挂到子视图 layer"。
     axs_glassify_sbez_diagnosticsMergeIfChanged(@"serp",
-        [NSString stringWithFormat:@"on=%d reduce=%d lists=%lu cells=%lu inwin=%lu bentF=%lu bentC=%lu fbk=%lu nobend=%lu sample=%@",
+        [NSString stringWithFormat:@"on=%d reduce=%d lists=%lu cells=%lu inwin=%lu bentF=%lu bentC=%lu fbk=%lu nobend=%lu skipA=%lu sample=%@",
          (int)axs_glassify_sbez_serpFastOn, (int)reduce,
          (unsigned long)lists, (unsigned long)moved, (unsigned long)inwin,
          (unsigned long)axs_glassify_sbez_serpBentFrame,
          (unsigned long)axs_glassify_sbez_serpBentCenter,
          (unsigned long)axs_glassify_sbez_serpFeedback, (unsigned long)nobend,
+         (unsigned long)axs_glassify_sbez_serpSkippedAnim,
          samples.count ? [samples componentsJoinedByString:@" "] : @"(无在屏)"]);
 }
 
