@@ -45,6 +45,9 @@
 // 旧版「每帧改 model transform 把设备卡死」的覆辙。
 - (void)axs_glassify_sbez_serpPassQueued;
 - (void)axs_glassify_sbez_serpPassNow;
+// 帧偏移主体：列表 layoutSubviews 之后 %orig 同步调用（同一趟布局当最后写手），
+// 滚动/上新/保存事件走 serpPassQueued 合并调用。幂等。
+- (void)axs_glassify_sbez_serpApplyFrameOffsets;
 @end
 
 #pragma mark - S 形蜿蜒排列（自由函数，ListEntrance.m 实现）
@@ -55,15 +58,14 @@
 extern "C" {
 #endif
 
-// 该 view 是否正被蜿蜒排版占用 transform —— 玻璃引擎的每帧 transform 写手必须
-// 让位，否则两个所有权互相顶掉。非蜿蜒 cell 返回 NO，热路径只是读一个关联对象。
-BOOL axs_glassify_sbez_viewSerpDisplaced(UIView *view);
-
 // 面板保存后调用：刷新快速门控镜像；关闭或被重新调参时把已排版的 cell 恢复直线。
 void axs_glassify_sbez_serpPreferencesChanged(void);
 
 // 权威谓词 -> static 镜像。NotifyConfig reload 后与每趟 pass 开始时调用。
 void axs_glassify_sbez_serpUpdateGate(void);
+
+// 快速门控读（layoutSubviews 接线用）。
+BOOL axs_glassify_sbez_serpGateOn(void);
 
 #ifdef __cplusplus
 }

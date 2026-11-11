@@ -1267,7 +1267,7 @@
 			<key>label</key>
 			<string>S 形蜿蜒排列（排版形变）</string>
 			<key>footerText</key>
-			<string>开：通知列的“中心线”本身就是蜿蜒的 S —— 静止定格也是 S 形，滚动时整列沿轨迹流动。任何一张卡都不回正：拐弯（波峰/波谷）处缩到最小并顺切线倾转，穿越中线时同样保持缩小、且此刻倾转最大，整屏始终是一条连续的蛇形。受总开关控制。</string>
+			<string>开：通知列的“中心线”本身就是蜿蜒的 S —— 静止定格也是 S 形，滚动时整列沿轨迹流动。任何一张卡都不回正：拐弯（波峰/波谷）处缩到最小，穿越中线时同样保持缩小，整屏始终是一条连续的蛇形。位移直接写在卡片布局帧上（v7），不与系统动画抢属性，因此不会闪烁。受总开关控制。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -1335,24 +1335,7 @@
 			<key>max</key>
 			<real>0.5</real>
 		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSTitleValueCell</string>
-			<key>cellClass</key>
-			<string>AxsGlassifySliderCell</string>
-			<key>default</key>
-			<real>8.0</real>
-			<key>defaults</key>
-			<string>com.axs.glassify</string>
-			<key>key</key>
-			<string>sbz_serp_tilt_deg</string>
-			<key>label</key>
-			<string>拐处倾转(°)</string>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>20.0</real>
-		</dict>
+
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>

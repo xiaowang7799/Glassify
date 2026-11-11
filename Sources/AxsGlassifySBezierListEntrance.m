@@ -46,11 +46,15 @@ static const char axs_glassify_sbez_listKeyJustAppeared = 0;
 // Timestamp of the last effect played on a view, so the several triggers that can
 // fire for one appearance do not animate it twice.
 static const char axs_glassify_sbez_listKeyLastEffectAt = 0;
-// ── S 形蜿蜒排列 ──
-// A cell's model transform as it was *before* the serpentine pass touched it.
-// Presence of this association is also the marker "this cell is displaced", so
-// turning the effect off can restore exactly the cells it had moved.
-static const char axs_glassify_sbez_keySerpOriginal = 0;
+// ── S 形蜿蜒排列（v7：帧偏移版）──
+// v6 抢 layer.transform 的代价（真机录屏）：静止仍整齐 + 卡片持续闪现 ——
+// 我们清掉系统常驻动画后呈现值跳到我们的位移，系统下一次布局写回 identity
+// 并重挂动画又跳回直线，每拍最多两次可见跳变 = 闪烁，而且系统总写在最后。
+// v7 改为：位移与缩小写在 cell 的 frame 上，并在列表自己的 layoutSubviews
+// 之后（同一趟布局的最后写手）执行 —— frame 本来就是列表在写的属性，
+// 系统摆完我们接着挪位，是接力不是抢占；transform 整个让给系统/玻璃。
+static const char axs_glassify_sbez_keySerpFrameBase = 0;   // 系统摆好的原始 frame
+static const char axs_glassify_sbez_keySerpFrameWant = 0;   // 我们上次写入的目标 frame
 // One queued pass per runloop tick: layout + setContentOffset + cell-add all
 // fire several times per frame; the pass itself is idempotent, so coalescing
 // is free correctness, not an optimisation.
@@ -81,145 +85,57 @@ static NSHashTable<UIScrollView *> *axs_glassify_sbez_serpLists(void) {
     return table;
 }
 
-// 真机证据（v5：on=1 moved=134 但屏幕整齐）指向 Core Animation 的呈现值优先：
-// 锁屏给 cell 挂的 transform 动画播完后以 removedOnCompletion=NO 常驻，持续输出
-// 它自己的值；我们写的 model transform 数据上存在、画面上被盖住。
+// ── S 形蜿蜒排列（v7：帧偏移版）──
+// 真机 v6 录屏：静止仍整齐 + 卡片持续闪现。闪现是 v6 在跟系统抢
+// layer.transform 所有权的结果：我们清掉系统常驻动画 -> 呈现值跳到我们的
+// model 位移；系统下一次布局写回 identity 并重挂动画 -> 跳回直线。每拍最多
+// 两次可见跳变 = 闪烁，而且系统总写在最后，S 永远看不见。抢属性抢不赢。
 //
-// 只清"已经完成但仍常驻"的那类（removedOnCompletion == NO）：正在播放的动画
-// 默认 removedOnCompletion == YES，不碰，所以系统自己的入场动画照常播放完。
-// 清掉后呈现值落回 model，也就是我们的位移值。
+// v7 把位移与缩小写进 cell 的 frame，并且只在列表自己的 layoutSubviews
+// 之后（同一趟布局里当最后写手）执行 —— frame 本来就是列表在写的属性，
+// 这不是抢，是接力：系统摆完，我们按 y 相位挪位。transform 完全让给系统/
+// 玻璃（入场动画、notify_scale 照常合成在帧之上），无闪烁，也不需要定时器。
 //
-// 关闭时不需要把系统动画加回去：基准是在我们第一次碰它之前从 model 烘的，
-// 而系统设动画时通常同时把 model 写成动画终值（标准做法），所以恢复 model 后
-// 得到的正是系统原本要的那个静止值 —— 重新 addAnimation 反而会让它重播一次。
-static NSUInteger axs_glassify_sbez_serpOverrideCleared = 0;
+// 边界：只对普通 scroll 列表生效（真机诊断：锁屏列表 NCNotificationListView
+// 是 表格=0 集合=0 的普通 scroll 列表）。UITableView/UICollectionView 里改
+// cell frame 会触发系统重新布局、可能成环 —— 那两类直接跳过。
 
-static BOOL axs_glassify_sbez_animationTouchesTransform(CAAnimation *anim) {
-    if ([anim isKindOfClass:[CAAnimationGroup class]]) {
-        for (CAAnimation *sub in ((CAAnimationGroup *)anim).animations) {
-            if (axs_glassify_sbez_animationTouchesTransform(sub)) {
-                return YES;
-            }
-        }
-        return NO;
-    }
-    if ([anim isKindOfClass:[CAPropertyAnimation class]]) {
-        NSString *kp = ((CAPropertyAnimation *)anim).keyPath;
-        // transform / transform.scale / transform.rotation.z / transform.translation
-        return kp != nil && [kp hasPrefix:@"transform"];
-    }
-    return NO;
-}
-
-static void axs_glassify_sbez_serpClearRetainedOverrides(UIView *cell) {
-    CALayer *layer = cell.layer;
-    NSArray<NSString *> *keys = layer.animationKeys;
-    if (keys.count == 0) {
-        return;
-    }
-    for (NSString *key in keys) {
-        CAAnimation *anim = [layer animationForKey:key];
-        if (anim == nil || anim.removedOnCompletion) {
-            continue;   // 正在播的、会自己消失的：不动
-        }
-        if (!axs_glassify_sbez_animationTouchesTransform(anim)) {
-            continue;
-        }
-        [layer removeAnimationForKey:key];
-        axs_glassify_sbez_serpOverrideCleared++;
-    }
-}
-
-static void axs_glassify_sbez_serpRepassAllKnownLists(void) {
-    for (UIScrollView *list in [axs_glassify_sbez_serpLists().allObjects copy]) {
-        if (list.window == nil) {
-            continue;  // 不在屏的列表不排队：106 个登记表里真正有卡片的就几个
-        }
-        [list axs_glassify_sbez_serpPassQueued];
-    }
-}
-
-// 4Hz 收敛定时器（真机证据）：v5 诊断 on=1 moved=134 但用户静止看到的仍是
-// 整齐 —— 排版跑过、卡片也确实被排过，但锁屏自己的出现动画/布局在**我们之后**
-// 把 cell 的 transform 重置了，而那时没有任何被动触发源再叫我们重排。
-// 谁最后写谁赢，系统写在了最后。定时器把"最后写"的间隔压到 0.25s 内：
-// 每拍只是给在屏列表排队幂等 pass（比较后才写，静止画面零图层写入、零 GPU）。
-// 只在开关开着时存在；关闭即销毁，关着的进程不背这个开销。
-static dispatch_source_t axs_glassify_sbez_serpTimer;
-
-static void axs_glassify_sbez_serpDiag(void);   // 定义在下方（读回 transform 用）
-
-static void axs_glassify_sbez_serpTimerSet(BOOL on) {
-    if (on) {
-        if (axs_glassify_sbez_serpTimer != nil) {
-            return;
-        }
-        axs_glassify_sbez_serpTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                                                              dispatch_get_main_queue());
-        dispatch_source_set_timer(axs_glassify_sbez_serpTimer,
-                                  dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4),
-                                  NSEC_PER_SEC / 4, NSEC_PER_SEC / 10);
-        dispatch_source_set_event_handler(axs_glassify_sbez_serpTimer, ^{
-            axs_glassify_sbez_serpUpdateGate();
-            if (!axs_glassify_sbez_serpFastOn) {
-                axs_glassify_sbez_serpTimerSet(NO);
-                return;
-            }
-            axs_glassify_sbez_serpRepassAllKnownLists();
-            // 每 8 拍（约 2s）读回一次现场 transform 进诊断。放在这里而不是
-            // 每拍：sample 会随滚动变化，MergeIfChanged 只在字符串变了才落盘,
-            // 2s 一次是"能看清有没有被覆写"与"不重蹈每帧写盘"的折中。
-            static NSUInteger tickCount = 0;
-            if ((++tickCount % 8) == 0) {
-                axs_glassify_sbez_serpDiag();
-            }
-        });
-        dispatch_resume(axs_glassify_sbez_serpTimer);
-    } else if (axs_glassify_sbez_serpTimer != nil) {
-        dispatch_source_cancel(axs_glassify_sbez_serpTimer);
-        axs_glassify_sbez_serpTimer = nil;
-    }
-}
-
-// Geometric notes (why this cannot loop the way the old per-frame version did):
-// - Nothing here writes frame/bounds/contentOffset, only layer.transform of cells
-//   the list itself reports as visible. The list never gets a reason to re-layout,
-//   so pass -> layout -> pass cycles cannot form.
-// - Every pass recomputes from the stored *original* base, so passes are
-//   idempotent; coalescing several scroll events into one pass is exact.
-// - While a cell is displaced the glass per-tick transform writer is fenced off
-//   (see AxsGlassifyNotifyAnimator applyScale), so one owner writes each
-//   cell's transform at a time; on a prefs reload the base is re-fetched, so a
-//   changed notify_scale cannot go stale.
+// Geometric notes (v7 frame offsets; why this cannot loop the way the old
+// per-frame transform version did):
+// - The only property written is a cell's own `frame`, and only inside the
+//   list's own layout pass (after %orig) or an idempotent queued pass. The list
+//   does not re-layout because a cell moved - it lays cells out, it is not
+//   notified by them - so pass -> layout -> pass cycles cannot form.
+// - Every pass recomputes from the stored *system base* frame, and re-bases
+//   whenever the current frame differs from what we last wrote. System wins
+//   the base, we only append the offset: offsets can never compound.
+// - transform is never touched, so the system's own cell animations and the
+//   glass engine's scale/tilt compose on top of the frame naturally, with no
+//   ownership fight and no visible snapping.
 static void axs_glassify_sbez_serpGeometryForY(CGFloat y, CGFloat amplitude, CGFloat wavelength,
-                                               CGFloat shrink, CGFloat tiltRad,
-                                               CGFloat *outX, CGFloat *outScale, CGFloat *outRot) {
+                                               CGFloat shrink, CGFloat *outX, CGFloat *outScale) {
     CGFloat phase = (CGFloat)M_PI * 2.0f * y / MAX(wavelength, 60.0f);
     CGFloat s = sinf(phase);
     *outX = amplitude * s;
     // 用户定稿：不存在"回到中线就恢复整齐"。波峰/波谷（|sin|=1）缩到最大
-    // (1-shrink)；穿越中线的卡片也保留 0.35·shrink 的"穿越态"缩小，并且此刻
-    // 倾转恰为最大（cos=±1），所以整屏任何时候看都是一条连续的蛇形，
-    // 不会有一排全尺寸居中的正常卡片。
+    // (1-shrink)；穿越中线的卡片也保留 0.35·shrink 的"穿越态"缩小 —— 整屏
+    // 任何时候看都是一条连续的蛇形，不会有一排全尺寸居中的正常卡片。
+    // （倾转档在 v7 移除：旋转只能走 transform，而 transform 归系统所有 ——
+    //  v6 的闪现就是抢它的代价。缩小改在 frame 上做，观感一致且零冲突。）
     CGFloat a = fabs(s);
     *outScale = 1.0f - shrink * (0.35f + 0.65f * a);
-    // cos is the tangent's sign - the lean follows the ribbon direction.
-    *outRot = tiltRad * cosf(phase);
 }
 
 static void axs_glassify_sbez_serpRestoreCell(UIView *cell) {
-    NSValue *stored = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal);
-    if (stored == nil) {
-        return;
+    NSValue *baseV = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameBase);
+    NSValue *wantV = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameWant);
+    // 只有当 frame 仍等于我们上次写的目标时才恢复 —— 系统已经自己挪走
+    // （回收/重摆）就别去打断它。
+    if (baseV != nil && wantV != nil && CGRectEqualToRect(cell.frame, wantV.CGRectValue)) {
+        cell.frame = baseV.CGRectValue;
     }
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    CATransform3D original = stored.CATransform3DValue;
-    if (!CATransform3DEqualToTransform(cell.layer.transform, original)) {
-        cell.layer.transform = original;
-    }
-    [CATransaction commit];
-    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameBase, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameWant, nil, OBJC_ASSOCIATION_ASSIGN);
     [axs_glassify_sbez_serpDisplaced() removeObject:cell];
 }
 
@@ -229,54 +145,102 @@ static void axs_glassify_sbez_serpRestoreAllDisplaced(void) {
     }
 }
 
-BOOL axs_glassify_sbez_viewSerpDisplaced(UIView *view) {
-    return view != nil && objc_getAssociatedObject(view, &axs_glassify_sbez_keySerpOriginal) != nil;
+// 反馈回路硬保险（旧版把设备卡死过的教训，不赌"应该不会成环"）：
+// 正常静止时列表的 layoutSubviews 每秒 0~2 次；滚动时约 60 次/秒但
+// contentOffset 每拍都在变。所以"contentOffset 没变、我们写了 frame、
+// 却又被叫进 layoutSubviews"连续出现 = 我们的写入正在触发重摆 = 成环。
+// 连续 10 次即判定，永久禁用该列表并恢复基准，诊断里报 disabled=N。
+static const char axs_glassify_sbez_listKeyLoopOffset = 0;   // NSValue CGPoint
+static const char axs_glassify_sbez_listKeyLoopTicks = 0;    // NSNumber
+static const char axs_glassify_sbez_listKeyLoopDisabled = 0; // NSNumber
+
+static void axs_glassify_sbez_serpLoopGuardTick(UIScrollView *list, NSUInteger wrote) {
+    if (wrote == 0) {
+        objc_setAssociatedObject(list, &axs_glassify_sbez_listKeyLoopTicks, @0,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    NSValue *lastV = objc_getAssociatedObject(list, &axs_glassify_sbez_listKeyLoopOffset);
+    CGPoint now = list.contentOffset;
+    BOOL same = lastV != nil && CGPointEqualToPoint(lastV.CGPointValue, now);
+    objc_setAssociatedObject(list, &axs_glassify_sbez_listKeyLoopOffset,
+                             [NSValue valueWithCGPoint:now], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSInteger ticks = same ? [objc_getAssociatedObject(list, &axs_glassify_sbez_listKeyLoopTicks) integerValue] + 1 : 0;
+    objc_setAssociatedObject(list, &axs_glassify_sbez_listKeyLoopTicks, @(ticks),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (ticks < 10) {
+        return;
+    }
+    // 判定成环：禁用这个列表，把它排过的卡片全部恢复。
+    objc_setAssociatedObject(list, &axs_glassify_sbez_listKeyLoopDisabled, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (UIView *cell in [axs_glassify_sbez_serpDisplaced().allObjects copy]) {
+        if ([cell isDescendantOfView:list]) {
+            axs_glassify_sbez_serpRestoreCell(cell);
+        }
+    }
+    axs_glassify_sbez_diagnosticsMerge(@{@"serpDisabled": NSStringFromClass([list class]) ?: @"?"});
 }
 
-// 权威谓词 -> static 镜像，并顺带维护 4Hz 收敛定时器（见 serpTimerSet 注释）。
+// 面板保存 / 定时器之外唯一的"主动重排"入口：对全部已知列表排队一趟 pass。
+// 只挑在屏的（lists 登记表里真正有卡片的就几个），且 serpPassQueued 自带
+// 每 runloop 合并，连拍多下也只跑一趟。
+static void axs_glassify_sbez_serpRepassAllKnownLists(void) {
+    for (UIScrollView *list in [axs_glassify_sbez_serpLists().allObjects copy]) {
+        if (list.window == nil) {
+            continue;
+        }
+        [list axs_glassify_sbez_serpPassQueued];
+    }
+}
+
+// 权威谓词 -> static 镜像（热 hook 只读这个 BOOL）。
 void axs_glassify_sbez_serpUpdateGate(void) {
     axs_glassify_sbez_serpFastOn =
         [[AxsGlassifyNotifyConfig axs_glassify_notify_shared] axs_glassify_notify_sbezSerpActive];
-    axs_glassify_sbez_serpTimerSet(axs_glassify_sbez_serpFastOn);
 }
 
-// 诊断一行（面板「S 形贝塞尔诊断」可见）：为什么没效果当场可读 —— 门控、
-// 减弱动态、已知列表数、当前位移中的卡片数，外加**头 3 张已位移卡片当前的
-// model transform 实样**（s=缩放 m11、x=平移 tx）。sample 读回 s≈1.00 x≈0
-// 而 moved>0，就是"我们写了、又被别人覆写回去"；moved=0 则是没排到卡片。
-// MergeIfChanged 内存去重，只在变化时落盘，调用点全在低频路径。
+BOOL axs_glassify_sbez_serpGateOn(void) {
+    return axs_glassify_sbez_serpFastOn;
+}
+
+// 诊断一行（面板「S 形贝塞尔诊断」可见）：门控、减弱动态、已知列表数、
+// 位移中的卡片数，外加头 3 张在屏卡片的 (dx,dy,k) —— 当前 frame 相对系统
+// 基准的位移与宽比。dx!=0 但肉眼直线 = 列表在我们之后又重摆过；moved=0 =
+// 没排到卡片。MergeIfChanged 内存去重，只在变化时落盘，调用点全在低频路径。
 static void axs_glassify_sbez_serpDiag(void) {
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
     NSUInteger lists = axs_glassify_sbez_serpLists().allObjects.count;
     NSUInteger moved = axs_glassify_sbez_serpDisplaced().allObjects.count;
+    NSUInteger dis = 0;
+    for (UIScrollView *l in axs_glassify_sbez_serpLists().allObjects) {
+        if ([objc_getAssociatedObject(l, &axs_glassify_sbez_listKeyLoopDisabled) boolValue]) {
+            dis++;
+        }
+    }
     NSMutableArray *samples = [NSMutableArray array];
-    NSUInteger inwin = 0, pvo = 0;
+    NSUInteger inwin = 0;
     for (UIView *cell in axs_glassify_sbez_serpDisplaced().allObjects) {
         if (cell.window == nil) {
             continue;
         }
         inwin++;
-        CATransform3D model = cell.layer.transform;
-        CALayer *pres = cell.layer.presentationLayer;
-        // pvo = presentation-override：model 已被我们写成位移值，但屏幕上实际
-        // 生效的呈现值不是它（系统那条 transform 动画在输出自己的值）。
-        // pvo>0 就是"写了但看不见"的直接证据。
-        if (pres != nil && !CATransform3DEqualToTransform(pres.transform, model)) {
-            pvo++;
-        }
         if (samples.count >= 3) {
             continue;
         }
-        [samples addObject:[NSString stringWithFormat:@"(m:%.2f/%.0f p:%.2f/%.0f)",
-                            model.m11, model.m41,
-                            pres ? pres.transform.m11 : 0.0,
-                            pres ? pres.transform.m41 : 0.0]];
+        NSValue *baseV = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameBase);
+        CGRect f = cell.frame, b = baseV.CGRectValue;
+        // (dx,dy)=当前帧相对系统基准的位移，k=宽比。dx!=0 而肉眼仍是直线,
+        // 说明列表在我们之后又重摆过。
+        [samples addObject:[NSString stringWithFormat:@"(dx=%.0f dy=%.0f k=%.2f)",
+                            f.origin.x - b.origin.x, f.origin.y - b.origin.y,
+                            b.size.width > 0 ? f.size.width / b.size.width : 0.0]];
     }
     axs_glassify_sbez_diagnosticsMergeIfChanged(@"serp",
-        [NSString stringWithFormat:@"on=%d reduce=%d lists=%lu moved=%lu inwin=%lu pvo=%lu ovr=%lu sample=%@",
+        [NSString stringWithFormat:@"on=%d reduce=%d lists=%lu moved=%lu inwin=%lu disabled=%lu sample=%@",
          (int)axs_glassify_sbez_serpFastOn, (int)reduce,
          (unsigned long)lists, (unsigned long)moved, (unsigned long)inwin,
-         (unsigned long)pvo, (unsigned long)axs_glassify_sbez_serpOverrideCleared,
+         (unsigned long)dis,
          samples.count ? [samples componentsJoinedByString:@" "] : @"(无在屏)"]);
 }
 
@@ -287,8 +251,7 @@ static void axs_glassify_sbez_serpDiag(void) {
 // 快照竞态：本通知由主配置发出；本模块用的 NotifyConfig 快照在另一条串行队列
 // 重载，此刻可能还是旧值（没人再发第二条通知）。所以连拍四下（当拍 / 下一拍 /
 // 0.12s / 0.4s），每拍用权威谓词重校门控；0.4s 那拍同时盖住"列表刚出现、cell
-// 还没挂上"的挂载竞态。恢复-重排顺序有讲究：先恢复直线再重烘基准，反过来会把
-// 旧偏移烘成新基准。
+// 还没挂上"的挂载竞态。帧偏移幂等（比较后才写），连拍无闪烁风险。
 void axs_glassify_sbez_serpPreferencesChanged(void) {
     void (^tick)(void) = ^{
         axs_glassify_sbez_serpUpdateGate();
@@ -672,92 +635,81 @@ static CAAnimation *axs_glassify_sbez_effectAnimation(NSInteger effect,
 - (void)axs_glassify_sbez_serpPassNow {
     objc_setAssociatedObject(self, &axs_glassify_sbez_listKeyPassQueued, nil,
                              OBJC_ASSOCIATION_ASSIGN);
-    // 异步跳转之后重读一次权威谓词校正镜像：排队与执行之间面板可能已改过，
-    // 一趟 pass 内只用同一组参数，不会半新半旧。
+    // 异步跳转之后重读一次权威谓词校正镜像：排队与执行之间面板可能已改过。
     axs_glassify_sbez_serpUpdateGate();
-    // 两种"本效果不生效"的状态（关开关 / 系统减弱动态）都恢复直线：
-    // 减弱动态开着时卡片也必须笔直，不能出现"开一半歪一半"。恢复幂等，
-    // 之后 displaced 归零，热路径回到一次静态读的零成本。
+    [self axs_glassify_sbez_serpApplyFrameOffsets];
+}
+
+// 帧偏移主体。幂等：每个 cell 存"系统基准 frame"与"我们上次的目标 frame"。
+// 当前 frame == 上次目标 => 系统没重摆，沿用旧基准；否则系统刚摆过（增删
+// 通知、旋转、回收复用），采纳当前 frame 为新基准 —— 系统永远赢得到基准权,
+// 我们只在它摆完后追加位移，偏移不会叠进偏移。
+- (void)axs_glassify_sbez_serpApplyFrameOffsets {
     if (!axs_glassify_sbez_serpFastOn || UIAccessibilityIsReduceMotionEnabled()) {
-        axs_glassify_sbez_serpRestoreAllDisplaced();
+        for (UIView *cell in [axs_glassify_sbez_serpDisplaced().allObjects copy]) {
+            if ([cell isDescendantOfView:self]) {
+                axs_glassify_sbez_serpRestoreCell(cell);
+            }
+        }
         return;
     }
     if (![self axs_glassify_sbez_isNotificationList]) {
         return;
+    }
+    if ([self isKindOfClass:[UITableView class]] || [self isKindOfClass:[UICollectionView class]]) {
+        return;  // 表/集合里改 cell frame 会触发系统重布局，可能成环：跳过
+    }
+    if ([objc_getAssociatedObject(self, &axs_glassify_sbez_listKeyLoopDisabled) boolValue]) {
+        return;  // 已判定成环并禁用（诊断 serpDisabled= 有记录）
     }
 
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
     CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:28.0];
     CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:260.0];
     CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.18];
-    CGFloat tiltDeg = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_tilt_deg" defaultValue:8.0];
     amp = MAX(0.0f, MIN(amp, 120.0f));
     wavelength = MAX(80.0f, MIN(wavelength, 800.0f));
     shrink = MAX(0.0f, MIN(shrink, 0.5f));
-    tiltDeg = MAX(0.0f, MIN(tiltDeg, 20.0f));
-    CGFloat tiltRad = tiltDeg * (CGFloat)M_PI / 180.0f;
 
-    // visibleCells 现在对所有列表形态都有结果：table/collection 用系统的，
-    // 普通 scroll 列表（NCNotificationListView）用子视图里的 *Notification* 视图。
-    NSArray *cells = axs_glassify_sbez_visibleCells(self);
-    if (cells.count == 0) {
-        return;
-    }
-
-    for (UIView *cell in cells) {
-        CGSize size = cell.bounds.size;
-        if (size.width < 1.0f || size.height < 1.0f) {
+    NSUInteger wrote = 0;
+    for (UIView *cell in self.subviews) {
+        const char *name = object_getClassName(cell);
+        if (name == NULL || strstr(name, "Notification") == NULL) {
             continue;
         }
-        CGPoint centre = [cell convertPoint:CGPointMake(size.width * 0.5f, size.height * 0.5f)
-                                     toView:self];
-        CGFloat x, scale, rot;
-        axs_glassify_sbez_serpGeometryForY(centre.y, amp, wavelength, shrink, tiltRad,
-                                           &x, &scale, &rot);
-
-        NSValue *stored = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal);
-
-        BOOL straight = fabs(x) < 0.5f && fabs(scale - 1.0f) < 0.003f && fabs(rot) < 0.001f;
-        if (straight) {
-            if (stored != nil) {
-                axs_glassify_sbez_serpRestoreCell(cell);
-            }
+        CGRect frame = cell.frame;
+        if (frame.size.width < 1.0f || frame.size.height < 1.0f) {
             continue;
         }
+        NSValue *baseV = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameBase);
+        NSValue *wantV = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameWant);
 
-        if (stored == nil) {
-            // 烘基准之前先清掉常驻的 transform 覆盖动画：否则烘进去的是那条
-            // 动画的输出值（多半是 identity 之外的系统入场终值），基准就错了。
-            axs_glassify_sbez_serpClearRetainedOverrides(cell);
-            // Bake the current (straight) model transform as the base exactly
-            // once; glass owns this cell's transform again only after restore.
-            objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal,
-                                     [NSValue valueWithCATransform3D:cell.layer.transform],
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [axs_glassify_sbez_serpDisplaced() addObject:cell];
-            stored = objc_getAssociatedObject(cell, &axs_glassify_sbez_keySerpOriginal);
+        CGRect base;
+        if (baseV != nil && wantV != nil && CGRectEqualToRect(frame, wantV.CGRectValue)) {
+            base = baseV.CGRectValue;          // 系统没动过：沿用旧基准
         } else {
-            // 已排版的卡片每拍也要清：系统随时可能又挂一条常驻 transform 动画
-            // 把我们的 model 值盖住（v5 真机 moved=134 却看不见就是这个）。
-            axs_glassify_sbez_serpClearRetainedOverrides(cell);
+            base = frame;                      // 系统刚摆（或首次）：采纳为新基准
+            objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameBase,
+                                     [NSValue valueWithCGRect:base], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [axs_glassify_sbez_serpDisplaced() addObject:cell];
         }
 
-        CATransform3D base = stored.CATransform3DValue;
-        // base first, then scale/lean/displace around the layer anchor
-        // (anchor is the card centre by default, so scaling and rotation stay
-        // in place and x is measured in list coordinates).
-        CATransform3D local = CATransform3DScale(CATransform3DIdentity, scale, scale, 1.0);
-        local = CATransform3DRotate(local, rot, 0.0, 0.0, 1.0);
-        local = CATransform3DTranslate(local, x, 0.0, 0.0);
-        CATransform3D target = CATransform3DConcat(base, local);
-
-        if (!CATransform3DEqualToTransform(cell.layer.transform, target)) {
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            cell.layer.transform = target;
-            [CATransaction commit];
+        CGFloat dx, sc;
+        axs_glassify_sbez_serpGeometryForY(base.origin.y + base.size.height * 0.5f,
+                                           amp, wavelength, shrink, &dx, &sc);
+        CGFloat w = base.size.width * sc;
+        CGFloat h = base.size.height * sc;
+        CGRect want = CGRectMake(base.origin.x + (base.size.width - w) * 0.5f + dx,
+                                 base.origin.y + (base.size.height - h) * 0.5f,
+                                 w, h);
+        if (!CGRectEqualToRect(frame, want)) {
+            cell.frame = want;
+            objc_setAssociatedObject(cell, &axs_glassify_sbez_keySerpFrameWant,
+                                     [NSValue valueWithCGRect:want], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            wrote++;
         }
     }
+    axs_glassify_sbez_serpLoopGuardTick(self, wrote);
 }
 
 @end
