@@ -1,9 +1,10 @@
 # 液态玻璃（Glassify）
 
-一个 iOS 越狱插件，6.0.0 起合并了原 `Notification-Beautification`（液态通知）：
+一个 iOS 越狱插件，6.0.0 起合并了原 `Notification-Beautification`（液态通知），6.7.0 起再合并原 `SBezierNoti`（S 形贝塞尔通知）：
 
 - **玻璃部分**：把系统里本来就有毛玻璃的界面（控制中心、通知中心、文件夹、Dock、App 切换器…）重绘成更明显的"液态玻璃"。
 - **通知部分**：锁屏 / 通知中心的通知卡片换成自带玻璃底板 + 流动渐变 + 游鱼 / 泡泡 / 粒子 + 出现动画 + 尺寸圆角光影。
+- **S 形贝塞尔部分**：通知滚动进入视野时的 S 滑动等 12 种入场特效，以及横幅弹出时的 S 形入场 + 装饰曲线。
 
 > 注意：玻璃部分**不会**给整个桌面盖一层模糊。桌面/图标本身没有毛玻璃层，所以保持清晰；
 > 只有系统原本就带模糊的控件会被增强。
@@ -35,6 +36,45 @@
 - **情境**：充电蝴蝶（亮晶晶、大小可调、会扇翅膀飘起）、低电量自动降载、按时段自动切换预设、自定义预设保存/应用。
 - 设置保存后实时生效，无需重启 SpringBoard。
 
+### S 形贝塞尔入场（6.7.0 合并自 SBezierNoti）
+
+1. **滚动入场特效**（主力）—— 锁屏与通知中心里，每条通知滚动进入视野时沿自己的 S 轨迹滑入落位。机制照搬 [Cask](https://github.com/rpetrich/Cask)：在单元格被创建来显示的那一刻播**一次**动画，**不是每帧计算偏移**。面板「特效类型」共 13 档（0 关闭、1 淡入、2 缩放、3 横向展开、4 侧滑、5 上浮、6 翻转、7 S 滑动、8–12 各种带透视的旋转/翻转组合）。
+2. **横幅 S 形入场轨迹**（`sbz_entrance_enabled`）—— 横幅弹出时沿 S 轨迹滑入落位。只驱动 `transform`，落位即归零，停留时无残留。
+3. **S 形装饰曲线**（`sbz_decoration_enabled` + `sbz_decoration_style`）—— 横幅下缘画出的一条 S 波形线（`strokeEnd` 生长出来）。这是**静态的线**，和上面那条运动轨迹几何上不是一回事：轨迹是 x(时间)、线是 y(横向位置)，只是都像 S。`sbz_decoration_style` 决定线进场后「常驻停留」(0，画满停住，原插件的签名观感) 还是「淡出消失」(1，画满后收回)。
+
+**S 形蜿蜒排列（新增功能，和上面三个都不是一回事）**
+
+前三个效果都是"进场那一刻播完就归零"；这个不是动画，是**排版形变**：通知列的"中心线"本身就是一条蜿蜒的 S——静止定格时屏幕上的通知就是 S 形排列，滚动时整列像沿滑道流动。**任何一张卡都不回正**：摆到拐弯（波峰/波谷）的卡片缩到最小，穿越中线的卡片同样保持缩小（0.35·shrink 的"穿越态"）——整屏任何时候看都是一条连续的蛇形，不会有一排全尺寸居中的"正常卡片"。三个参数（摆幅/波长/拐处缩小）独立可调，开关 `sbz_serp_enabled`。
+
+实现要点（v8；前三版在这里连续踩坑，逐条记录，别再走回头路）：
+
+- **v6 的教训：不要跟系统抢 `layer.transform`。** 位移写成 model transform，真机结果是"静止仍整齐 + 卡片持续闪现"：锁屏给每张卡片挂着 transform 动画，Core Animation 的呈现值优先于 model，我们写的值上不了屏；清掉系统动画后又会在下一次布局被写回并重挂，每拍最多两次可见跳变 = 闪烁。
+- **v7 的教训：事后覆盖也慢一步。** 改在列表 `layoutSubviews` 的 `%orig` 之后写 cell.frame —— 不闪了，但摆幅/缩小拉满仍纹丝不动（真机录屏确认）。因为摆卡片的不是列表自己，是外层容器（锁屏封面/RootLockPage），它在我们之后还会再写一次 frame。任何"事后覆盖"都要跟一个看不见的写者赛跑。
+- **v8 = 接管写入点，不再事后。** hook 卡片自己的 `-setFrame:` 与 `-setCenter:`（`NCNotificationListCell`，诊断已确认它就是锁屏卡片类）。无论哪个布局发起者，最终都必须经过这两个咽喉 —— 系统在这里交出坐标，我们就地把它们按 y 相位弯成 S 再转交真实 setter。**写者只有一个**（弯折后的值就是系统要写的值），所以没有竞态、没有覆盖、没有闪烁。三条铁律保证不死循环（旧版卡死设备的教训）：
+  1. **写入闸**：我们写 frame/center 会同步重入同一个 hook，用 `__thread` 标志挡住，重入时原样放行，绝不二次弯折。
+  2. **基准只取系统交进来的那个值**（参数 `in`），绝不从 `cell.frame` 回推 —— 回推会把弯折值当基准，偏移叠进偏移。
+  3. **反馈检测**：若系统下一次交进来的值 == 我们上次写出去的值，说明它把我们的输出当成了输入（回环），该卡片永久跳过弯折，诊断报 `fbk=`/`nobend=`。
+- **`setFrame:` 与 `setCenter:` 都接管，计数分开**（`bentF`/`bentC`）：横向摆位分别走各自的属性；缩小统一走 `layer.transform` 均匀缩放（见下条 v12），所以两条路都有完整观感。弯折是纯函数：同一个输入永远同一个输出，系统重复摆位不会让画面变化。
+- **v11/v12 的教训：缩小只能用 transform。** v10 只在 `setFrame:` 路径做了尺寸缩小，而锁屏摆卡片走的是 `setCenter:` —— 缩小从未生效（用户反馈"拐弯处没变化"）。v11 改用 `bounds` 补上，真机仍然无效：改 `bounds` 只缩外框，卡片内容（内部的 ShortLook 视图）不跟随重排，画面上看不出任何变化。v12 最终用 `layer.transform` 缩放 —— 它缩放整个渲染子树，不需要卡片配合。**安全前提**：写缩放前先检查该 layer 是否挂着"常驻不删"的 transform 动画（`removedOnCompletion == NO`），有则跳过缩放只保留摆位并计入 `skipA=` —— 这正是 v6 闪烁的成因，这次不抢也不删，只避让。缩放基准同样只记一次（首次缩放前的 model transform，可能已含玻璃的缩放/倾斜），每趟从基准重乘 `sc`，永不叠乘。恢复时**先撤缩放再比 frame**：transform 存在时 `cell.frame` 返回的是视觉矩形，顺序反了位移就恢复不掉。被缩放的卡片期间玻璃引擎的每帧 transform 写手让位（围栏 `axs_glassify_sbez_viewSerpScaled`），单一所有权。
+- **减弱动态效果是 static 镜像**（`UIAccessibilityIsReduceMotionEnabled()` 是系统调用，绝不能放进每帧几十次的 `setFrame:`），与门控一起在低频点刷新；列表进窗口（每次解锁/拉通知中心）也刷新一次 —— 没有公开的"辅助功能变更"通知，这是最便宜且总在"用户下一次看锁屏"之前的时机。
+- **边缘钳制（v9 打磨，真机截图反馈）**：滑条只管"想摆多远"，代码负责"最多能摆多远" —— 弯后的中心夹在 `[边距+w/2, 容器宽-边距-w/2]`，摆幅拉满也只是贴边，卡片永远不出屏。容器宽优先取 superview，退化到屏宽。
+- **默认值调向"蛇"而不是"锯齿"（v9）**：波长 260→520、摆幅 28→34、缩小 0.18→0.15。卡片高约 90pt 时，260 的波长让相邻卡片相位差 ≈113°（左右对跳=锯齿）；520 让一张完整波长覆盖约 5~6 张卡片，才是连续的蛇。波长滑条范围同步改为 120–900。
+- **关闭零开销**：`setFrame:` 里第一步是两个 static BOOL 读，关着时立即原样放行。列表侧的 `setContentOffset:` 信号现在只服务"关/减弱动态"一侧的恢复自愈。
+- **现场可读**：面板「S 形贝塞尔诊断」的 `蜿蜒排版：on=… reduce=… lists=… cells=… inwin=… bentF=… bentC=… fbk=… nobend=… sample=(dx=… dy=… k=…)`。判读：`bentF`/`bentC` 都为 0 ⇒ 系统根本没走这两个 setter，要换接管点；`sample` 的 `dx≠0` 而肉眼仍是直线 ⇒ 外层又改写了一次，需要连外层一起接管；`nobend>0` ⇒ 反馈回环被检测到并已保护。
+
+滚动入场特效与蜿蜒**可共存**：入场动画是挂在 layer 上的 CAAnimation（播完自动移除），蜿蜒写的是 model transform 的缩放 + frame 的横向摆位。CAAnimation 播放期间其呈现值优先，播完落回 model —— 而入场动画的关键帧正是**以当时的 model transform 为基准**生成的（见 `effectAnimation` 的 base 参数），所以卡片一边播入场动画一边已经站在自己的 S 位上，动画结束落点精确，不会把缩放拍回原尺寸。系统若给卡片挂着**常驻不删**的 transform 动画，蜿蜒会跳过缩放只保留摆位（`skipA=`），避免 v6 式对撞。
+
+三者各自独立开关，都受总开关 `enabled` 控制。横幅侧的轨迹与装饰线在 6.7.0 拆分前共用一个 `entranceEnabled`，旧值迁移时同时点亮两者、并把样式钉成「常驻」，完全复刻升级前观感。列表识别、一次性动画、`tableView.window` 守卫、「减弱动态效果」尊重、诊断自报告（面板「S 形贝塞尔诊断」分组直接显示真实类名，不用开系统日志）等行为与原插件一致；调试日志的标签变为 `[Glassify-SBez]`。
+
+**合并后的两处仲裁**（这是两个项目功能真正重叠的地方）：
+
+| 冲突 | 处理 |
+|---|---|
+| 横幅 S 入场**轨迹**（整条 `transform`） vs 出现动画 `appear_mode`（`transform.scale`） | **互斥，轨迹优先**。`sbz_entrance_enabled` 打开时，`AxsGlassifyNotifyAnimator` 的 attach 路径把 appear_mode 视作 0，不再挂 scale 动画。**装饰线不参与这条仲裁** —— 它只动 `strokeEnd`，不碰 transform，可与任意出现动画共存。 |
+| 入场 / 特效动画落位 vs 玻璃的 `notify_scale` / `tilt` model transform | 所有入场档位改成**以 layer 当前 transform 为基准**起落（终点 = 基准值），动画移除时不再从缩放态跳回原尺寸；淡入同理落到 `layer.opacity`。 |
+
+`NCNotificationShortLookView` / `NCNotificationLongLookView` 在合并前是两个 dylib 各自 `%hook` 同一批方法；现在只剩 `Hooks/AxsGlassifyNotifications.xm` 一处 hook，玻璃底板、动画引擎和 S 入场在同一次 `layoutSubviews` 里按序驱动。`SBUICNotificationView`（旧系统横幅）仍只在 S 贝塞尔的 hook 组里。
+
 ## 合并后的结构
 
 一个 dylib、一个偏好域（`com.axs.glassify`）、一套 hook：
@@ -42,10 +82,15 @@
 | 文件 | 职责 |
 |---|---|
 | `Hooks/AxsGlassifyMain.xm` | 系统毛玻璃（`_UIBackdropViewSettings` / `UIVisualEffectView`） |
-| `Hooks/AxsGlassifyNotifications.xm` | 通知卡片：**一个** hook 点同时驱动下面两个引擎 |
+| `Hooks/AxsGlassifyNotifications.xm` | 通知卡片：**一个** hook 点同时驱动下面三个引擎（含合并后的 S 入场入口） |
+| `Hooks/AxsGlassifySBezier.xm` | 旧系统横幅 `SBUICNotificationView` + 列表滚动入场 hook 组（`UIScrollView` / cell / `UITableView` 私有触发） |
 | `Sources/AxsGlassifyLiquid.*` | 玻璃底板：iOS 26+ 用 `UIGlassEffect`，低版本回退 chrome 材质 + 高光/色散 |
 | `Sources/AxsGlassifyNotifyAnimator.*` | 渐变 / 游鱼 / 粒子 / 出现动画 / 缩放倾斜 / 溶解 |
-| `Sources/AxsGlassifyNotifyConfig.*` | 通知部分的配置访问器（同一份快照） |
+| `Sources/AxsGlassifyNotifyConfig.*` | 通知部分 + S 贝塞尔部分的配置访问器（同一份快照，含互斥仲裁谓词） |
+| `Sources/AxsGlassifySBezierCurve.h` | S 波几何、配色、入场 / cell 特效动画构造（仅 `static inline`，无 ObjC 类） |
+| `Sources/AxsGlassifySBezierListEntrance.m` | 列表识别 + cell 出现时的一次性入场（Cask 机制） |
+| `Sources/AxsGlassifySBezierDecoration.m` | 横幅 S 入场：装饰层、观察配置、播放 |
+| `Sources/AxsGlassifySBezierDiagnostics.h` | 滚动入场的自报告（面板「S 形贝塞尔诊断」读取） |
 
 合并时收敛掉的冲突：
 
@@ -55,6 +100,30 @@
   Preferences 默认写入，不广播，改完要等下次重建视图才看得到。
 - **旧配置自动迁移**：首次打开面板时把 `com.axs.notifyliquid.plist` 里的键搬到新域（`migrated_notifyliquid` 标记，只做一次）。
 - **包冲突**：`conflicts/replaces/provides: com.axs.notifyliquid`，安装时自动顶掉旧的「液态通知」，不会两个 dylib 同时 hook 同一批类。
+
+SBezierNoti 并入时额外收敛的冲突（6.7.0）：
+
+- **一个类只有一个 `%hook` 块**：`NCNotificationShortLookView` / `NCNotificationLongLookView` 原来被两个 dylib 各自 hook
+  `layoutSubviews` / `didMoveToWindow`，加载顺序决定谁赢。现在这两个类只在 `AxsGlassifyNotifications.xm` 里 hook 一次，
+  S 入场通过 `UIView (AxsGlassifySBezier)` 分类方法被同一次布局调用；`SBUICNotificationView` 不在玻璃侧出现，仍单独成组。
+- **横幅入场 vs 出现动画互斥**：S 入场**轨迹**驱动整条 `transform`，`appear_mode` 驱动 `transform.scale`，同层并存会互相顶掉。
+  仲裁只看一个谓词 `axs_glassify_notify_sbezEntranceActive`：轨迹开 → 出现动画不挂；轨迹关 → 出现动画照旧。
+- **轨迹与装饰线拆成两个独立开关**：原插件一个 `entranceEnabled` 同时管「滑入轨迹」和「下缘常驻的 S 线」，两者常被当成
+  一回事（其实一个是 x(时间)、一个是 y(横向位置)，只是都像 S）。6.7.0 拆为 `sbz_entrance_enabled` + `sbz_decoration_enabled`，
+  装饰线另有 `sbz_decoration_style`（常驻/淡出）。线改画 `strokeEnd` 关键帧且与 transform 解耦，任何出现动画都能和线共存。
+- **入场终点改为基准 transform**：玻璃的 `notify_scale` / `tilt_intensity` 是写在 model transform 上的，原插件所有档位把
+  终点写成 identity，动画一移除缩放就没了。现在起点/终点都以 `layer.transform` 为基准（淡入以 `layer.opacity` 为基准）。
+- **配置键统一 `sbz_` 前缀**：旧域的 `duration` / `amplitude` / `width` / `opacity` / `hue` 这类裸名并入同一个 plist 后必撞名，
+  现在分别是 `sbz_duration`…，滚动档位在 `sbz_scroll_effect`。旧值由面板首次打开时按固定映射表搬一次（`migrated_sbeziernoti`），
+  新域已有的值优先，不会被旧值覆盖。
+- **旧 `enabled` 故意不迁移**：合并后 `enabled` 是**全插件总开关**，打开会连带增强系统毛玻璃（进程级 `_UIBackdropViewSettings` hook）。
+  只用过 S形贝塞尔通知 的用户升级后被静默开启玻璃等于"改了没要求改的东西"，所以只搬特效参数，总开关留给用户自己开；
+  同时 `sbz_scroll_effect` 的缺省从旧插件的 7（S 滑动）改为 0（关闭），保证升级后默认惰性。
+- **热 hook 门控**：`UIView didMoveToSuperview` 与 `UIScrollView didMoveToWindow` 是全进程级别的热点。诊断记录仍然保留
+  （识别独立于开关，错判才能被发现），但「刚出现」标记的关联对象写入与 async 派发只在 `sbz_scroll_effect > 0` 且总开关打开时执行。
+- **包冲突**：`Conflicts/Replaces` 增加 `com.axs.sbeziernoti`，装 Glassify 会顶掉旧的 S形贝塞尔通知；`Provides` 不含它，
+  所以两个插件同时依赖 `com.axs.sbeziernoti` 的旧配方不会因此得到满足，需要用户自己确认。
+- **旧键遗留**：`scrollEnabled` / `scrollRotation` 在原插件 5.2.0-13 起已不再读取，这次也不迁移（留着不影响）。
 
 ## 通知玻璃的实现
 

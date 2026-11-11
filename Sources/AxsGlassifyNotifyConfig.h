@@ -71,6 +71,27 @@
 - (double)axs_glassify_notify_notifyWidth;
 // S 曲线滑动：拖动通知时视图沿贝塞尔 S 形轨迹运动的水平幅度（0–60pt，0=关）。
 - (double)axs_glassify_notify_sCurveAmp;
+// ── S 形贝塞尔通知（6.7.0 合并自 com.axs.sbeziernoti，键名统一 sbz_ 前缀） ──
+// ── S 形贝塞尔通知（6.7.0 合并自 com.axs.sbeziernoti，键名统一 sbz_ 前缀） ──
+// 横幅侧两个独立开关：S 形入场轨迹（transform 动画）、S 形装饰曲线（画出来的线）。
+// 两者几何上不是一回事：轨迹是 x(时间)，线是 y(横向位置)，只是都像 S。
+- (BOOL)axs_glassify_notify_sbezEntranceEnabled;
+- (BOOL)axs_glassify_notify_sbezDecoEnabled;
+// 装饰曲线进场后的去向：0=常驻（画满停住）、1=淡出（画满后收回消失）。
+- (BOOL)axs_glassify_notify_sbezDecoFadeStyle;
+// 合并后的互斥仲裁：S 入场轨迹占用整条 transform，此时出现动画必须让位。
+// 装饰线只动 strokeEnd，不参与这个仲裁。
+- (BOOL)axs_glassify_notify_sbezEntranceActive;
+- (BOOL)axs_glassify_notify_sbezDecoActive;
+- (BOOL)axs_glassify_notify_sbezScrollActive;
+// S 形蜿蜒排列（排版形变，非进场动画）：静止时通知列就呈 S 蜿蜒，
+// 拐弯处缩小并顺切线倾转。可与「滚动入场特效」共存 —— 入场动画挂在
+// layer 的 CAAnimation 上，结束后表现层落回 model transform，而蜿蜒排版
+// 写的正是 model，所以卡片入场后正好落进自己的 S 位。
+- (BOOL)axs_glassify_notify_sbezSerpActive;
+// 通用读取（带类型与有限值校验，缺省回退）。
+- (BOOL)axs_glassify_notify_sbezBoolForKey:(NSString *)key defaultValue:(BOOL)defaultValue;
+- (double)axs_glassify_notify_sbezDoubleForKey:(NSString *)key defaultValue:(double)defaultValue;
 // 配置代次：每次偏好重新加载 +1，供渲染层判断是否需要整段重刷。
 - (NSUInteger)axs_glassify_notify_generation;
 // Generic accessors.

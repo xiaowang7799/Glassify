@@ -229,6 +229,57 @@ static BOOL axs_glassify_notify_bool(id value, BOOL def) {
     return axs_glassify_notify_clamped([self axs_glassify_notify_valueForKey:@"s_curve_amp" defaultValue:nil], 0.0, 0.0, 60.0);
 }
 
+// ── S 形贝塞尔通知（合并自 com.axs.sbeziernoti） ──
+// 与原工程一致：缺键、类型不对、非有限值都回落到代码内默认，
+// 默认值必须与 AxsGlassifyRoot.plist 里各行的 default 保持同步。
+- (BOOL)axs_glassify_notify_sbezBoolForKey:(NSString *)key defaultValue:(BOOL)defaultValue {
+    return axs_glassify_notify_bool([self axs_glassify_notify_valueForKey:key defaultValue:nil], defaultValue);
+}
+
+- (double)axs_glassify_notify_sbezDoubleForKey:(NSString *)key defaultValue:(double)defaultValue {
+    id value = [self axs_glassify_notify_valueForKey:key defaultValue:nil];
+    if (![value isKindOfClass:[NSNumber class]]) return defaultValue;
+    double d = [value doubleValue];
+    return isfinite(d) ? d : defaultValue;
+}
+
+- (BOOL)axs_glassify_notify_sbezEntranceEnabled {
+    return [self axs_glassify_notify_sbezBoolForKey:@"sbz_entrance_enabled" defaultValue:NO];
+}
+
+- (BOOL)axs_glassify_notify_sbezDecoEnabled {
+    return [self axs_glassify_notify_sbezBoolForKey:@"sbz_decoration_enabled" defaultValue:NO];
+}
+
+- (BOOL)axs_glassify_notify_sbezDecoFadeStyle {
+    return [self axs_glassify_notify_sbezBoolForKey:@"sbz_decoration_style" defaultValue:NO];
+}
+
+// 互斥仲裁的唯一真相：S 入场**轨迹**生效时，动画引擎不得再往同一 layer 上挂
+// transform.scale 的出现动画 —— 整条 transform 与它的子键路径同层并存时，
+// Core Animation 的表现层只会留下一份，观感就是抖动和落位错乱。
+// 装饰线只动 strokeEnd，不在这条仲裁里。
+- (BOOL)axs_glassify_notify_sbezEntranceActive {
+    return [self axs_glassify_notify_isEnabled] && [self axs_glassify_notify_sbezEntranceEnabled];
+}
+
+- (BOOL)axs_glassify_notify_sbezDecoActive {
+    return [self axs_glassify_notify_isEnabled] && [self axs_glassify_notify_sbezDecoEnabled];
+}
+
+// 滚动入场没有独立开关：特效档位 0 即「关闭」。
+- (BOOL)axs_glassify_notify_sbezScrollActive {
+    if (![self axs_glassify_notify_isEnabled]) return NO;
+    return [self axs_glassify_notify_sbezDoubleForKey:@"sbz_scroll_effect" defaultValue:0.0] > 0.0;
+}
+
+// 蜿蜒排列的独立开关。振幅/波长/收缩/倾转在 ListEntrance 里读，
+// 缺省必须与 AxsGlassifyRoot.plist 各行的 default 保持一致。
+- (BOOL)axs_glassify_notify_sbezSerpActive {
+    if (![self axs_glassify_notify_isEnabled]) return NO;
+    return [self axs_glassify_notify_sbezBoolForKey:@"sbz_serp_enabled" defaultValue:NO];
+}
+
 - (void)dealloc {
     CFNotificationCenterRemoveEveryObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                             (__bridge const void *)self);

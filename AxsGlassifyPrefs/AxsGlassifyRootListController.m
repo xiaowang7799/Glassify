@@ -1,10 +1,11 @@
 #import "AxsGlassifyRootListController.h"
 #import "AxsGlassifyPreferences.h"
+#import "AxsGlassifySBezierDiagnostics.h"
 #import <Preferences/PSSpecifier.h>
 #import <UIKit/UIKit.h>
 #import "AxsGlassifySliderCell.h"
 
-// 合并后的唯一根面板：玻璃外观 + 锁屏通知美化共用一套偏好域 com.axs.glassify。
+// 合并后的唯一根面板：玻璃外观 + 锁屏通知美化 + S 形贝塞尔入场共用一套偏好域 com.axs.glassify。
 @interface AxsGlassifyRootListController () <AxsGlassifySliderCellHandler>
 @end
 
@@ -37,13 +38,96 @@ static NSString *axs_glassify_legacyPreferencesPath(void) {
     axs_glassify_writePreference(@"migrated_notifyliquid", @YES, &error);
 }
 
+#pragma mark - 旧版「S 形贝塞尔通知」偏好迁移
+
+// 旧域 com.axs.sbeziernoti 用的是裸名（duration / amplitude / width / opacity / hue /
+// scrollEffect …），合并后统一加 sbz_ 前缀，否则会和新键撞名。旧值仍要保住，
+// 所以这里显式列出「旧键 -> 新键」的对应表。
+//
+// 注意：**故意不搬旧插件的 `enabled`**。合并后 `enabled` 是全插件总开关，一开就连带
+// 增强系统毛玻璃（`_UIBackdropViewSettings` 级别的进程内 hook）。只用过 S形贝塞尔通知的
+// 用户升级后被静默打开玻璃，属于「改了没要求我改的东西」，所以这里只搬特效参数，
+// 总开关留给用户自己打开（面板对应分组的 footerText 会说明）。
+static NSDictionary<NSString *, NSString *> *axs_glassify_sbez_migrations(void) {
+    static NSDictionary *map;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        map = @{
+            @"entranceEnabled": @"sbz_entrance_enabled",
+            @"debugLog":        @"sbz_debug_log",
+            @"scrollEffect":    @"sbz_scroll_effect",
+            @"scrollDuration":  @"sbz_scroll_duration",
+            @"scrollAmplitude": @"sbz_scroll_amplitude",
+            @"scrollSpan":      @"sbz_scroll_span",
+            @"scrollVariation": @"sbz_scroll_variation",
+            @"duration":        @"sbz_duration",
+            @"amplitude":       @"sbz_amplitude",
+            @"frequency":       @"sbz_frequency",
+            @"phase":           @"sbz_phase",
+            @"width":           @"sbz_width",
+            @"opacity":         @"sbz_opacity",
+            @"hue":             @"sbz_hue",
+        };
+    });
+    return map;
+}
+
+// 只做一次（migrated_sbeziernoti 标记）。已经在本域里存在的新键优先，
+// 旧值不覆盖用户可能在合并后已经调过的设置。
+- (void)axs_glassify_migrateSBezierPreferences {
+    NSDictionary *current = axs_glassify_readPreferences();
+    if (current[@"migrated_sbeziernoti"]) {
+        return;
+    }
+    NSString *modern = axs_glassify_preferencesPath();
+    NSString *legacyPath = [[modern stringByDeletingLastPathComponent]
+            stringByAppendingPathComponent:@"com.axs.sbeziernoti.plist"];
+    NSDictionary *legacy = [NSDictionary dictionaryWithContentsOfFile:legacyPath];
+    NSError *error = nil;
+    if ([legacy isKindOfClass:[NSDictionary class]] && legacy.count > 0) {
+        // 旧插件的开关语义是「enabled 打开才生效」，和合并后一致，所以直接搬。
+        NSDictionary *map = axs_glassify_sbez_migrations();
+        NSMutableDictionary *values = [NSMutableDictionary dictionary];
+        for (NSString *oldKey in map) {
+            id v = legacy[oldKey];
+            NSString *newKey = map[oldKey];
+            if (v == nil || current[newKey] != nil) continue;   // 缺键或新域已有值：不动
+            values[newKey] = v;
+        }
+        // 6.7.0 把横幅侧拆成「轨迹」+「装饰线」两个独立开关。旧插件一个
+        // entranceEnabled 同时管两者，所以老用户开了就得同时点亮两者，
+        // 并把样式钉成「常驻」(0) —— 完全复刻升级前的观感（线画满停住）。
+        if (legacy[@"entranceEnabled"] != nil && values[@"sbz_entrance_enabled"] != nil) {
+            if (current[@"sbz_decoration_enabled"] == nil) {
+                values[@"sbz_decoration_enabled"] = legacy[@"entranceEnabled"];
+            }
+            if (current[@"sbz_decoration_style"] == nil) {
+                values[@"sbz_decoration_style"] = @0;   // 常驻
+            }
+        }
+        if (values.count > 0) {
+            axs_glassify_writePreferences(values, &error);
+        }
+    }
+    axs_glassify_writePreference(@"migrated_sbeziernoti", @YES, &error);
+}
+
 #pragma mark - 列表
 
 - (NSMutableArray *)specifiers {
     if (!_specifiers) {
         [self axs_glassify_migrateLegacyPreferences];
+        [self axs_glassify_migrateSBezierPreferences];
         NSMutableArray *items = [[self loadSpecifiersFromPlistName:@"AxsGlassifyRoot"
                                                            target:self] mutableCopy];
+        // S 形贝塞尔部分保留了原插件的自报告：dylib 是唯一写入方，这里只读，
+        // 打开本页就能看到它有没有跑起来、读到什么配置、认出了哪些列表。
+        NSString *report = axs_glassify_sbez_diagnosticsReport();
+        for (PSSpecifier *specifier in items) {
+            if ([[specifier propertyForKey:@"axsSBezierDiagnostics"] boolValue]) {
+                [specifier setProperty:report forKey:@"footerText"];
+            }
+        }
         [items addObject:[PSSpecifier preferenceSpecifierNamed:@"关于我们" target:self
                      set:nil get:nil detail:nil cell:PSGroupCell edit:nil]];
         [items addObject:[PSSpecifier preferenceSpecifierNamed:@"搞机群友三叶草"
@@ -107,6 +191,10 @@ static NSString *axs_glassify_legacyPreferencesPath(void) {
         @"touch_glow_on": @NO,
         @"motion_highlight": @NO,
         @"low_power_guard": @YES,
+        @"sbz_entrance_enabled": @NO,
+        @"sbz_decoration_enabled": @NO,
+        @"sbz_serp_enabled": @NO,
+        @"sbz_scroll_effect": @0,
     }];
 }
 
@@ -129,6 +217,15 @@ static NSString *axs_glassify_legacyPreferencesPath(void) {
         @"tilt_intensity": @0.40,
         @"icon_glow": @0.60,
         @"low_power_guard": @YES,
+        // S 形贝塞尔：滚动列表用轻一档的「上浮」，横幅 S 入场留给横幅自己。
+        // 注意 appear_mode 会被 sbz_entrance_enabled 互斥顶掉，这里显式归零避免歧义。
+        @"sbz_scroll_effect": @5,
+        @"sbz_entrance_enabled": @YES,
+        @"sbz_decoration_enabled": @YES,
+        @"sbz_decoration_style": @0,
+        @"sbz_serp_enabled": @YES,
+        @"sbz_serp_amp": @22,
+        @"appear_mode": @0,
     }];
 }
 
@@ -194,6 +291,13 @@ static NSArray<NSString *> *axs_glassify_presetKeys(void) {
              @"icon_corner", @"icon_scale", @"icon_glow",
              @"corner_radius", @"notify_opacity", @"shadow_intensity",
              @"tilt_intensity", @"notify_width", @"s_curve_amp",
+             @"sbz_entrance_enabled", @"sbz_decoration_enabled", @"sbz_decoration_style", @"sbz_debug_log",
+             @"sbz_serp_enabled", @"sbz_serp_amp", @"sbz_serp_wavelength",
+             @"sbz_serp_shrink",
+             @"sbz_scroll_effect", @"sbz_scroll_duration", @"sbz_scroll_amplitude",
+             @"sbz_scroll_span", @"sbz_scroll_variation",
+             @"sbz_duration", @"sbz_amplitude", @"sbz_frequency",
+             @"sbz_phase", @"sbz_width", @"sbz_opacity", @"sbz_hue",
              @"auto_schedule", @"schedule_day", @"schedule_night"];
 }
 

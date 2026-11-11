@@ -6,6 +6,8 @@
 #import "AxsGlassifyNotifyConfig.h"
 #import "AxsGlassifyNotifications.h"
 #import "AxsGlassifyPreferences.h"
+// UIView (AxsGlassifySBezier)：合并后横幅 S 入场由本文件的同一组 hook 驱动。
+#import "AxsGlassifySBezier.h"
 
 // 锁屏 / 通知中心卡片：一套 hook 同时驱动两个引擎
 //   AxsGlassifyLiquid        —— 卡片底材（玻璃 / iOS 26 UIGlassEffect）
@@ -52,6 +54,13 @@ static NSArray<NSString *> *axs_glassify_notify_presetKeys(void) {
              @"icon_corner", @"icon_scale", @"icon_glow",
              @"corner_radius", @"notify_opacity", @"shadow_intensity",
              @"tilt_intensity", @"notify_width", @"s_curve_amp",
+             @"sbz_entrance_enabled", @"sbz_decoration_enabled", @"sbz_decoration_style", @"sbz_debug_log",
+             @"sbz_serp_enabled", @"sbz_serp_amp", @"sbz_serp_wavelength",
+             @"sbz_serp_shrink",
+             @"sbz_scroll_effect", @"sbz_scroll_duration", @"sbz_scroll_amplitude",
+             @"sbz_scroll_span", @"sbz_scroll_variation",
+             @"sbz_duration", @"sbz_amplitude", @"sbz_frequency",
+             @"sbz_phase", @"sbz_width", @"sbz_opacity", @"sbz_hue",
              @"auto_schedule", @"schedule_day", @"schedule_night"];
 }
 
@@ -95,6 +104,9 @@ static void axs_glassify_notify_applyScheduledPreset(void) {
         [animator axs_glassify_notify_attachToView:(UIView *)self];
     } else {
         [animator axs_glassify_notify_detachView:(UIView *)self];
+        // 离开窗口意味着横幅消失或被回收：把 S 入场的观察者和装饰层一起清掉，
+        // 下次出现才能重新认领、重新播一次。
+        [self axs_glassify_sbez_cleanup];
     }
     if (!self.window) {
         [AxsGlassifyLiquid axs_glassify_removeFromPlatter:(UIView *)self];
@@ -104,6 +116,12 @@ static void axs_glassify_notify_applyScheduledPreset(void) {
 - (void)layoutSubviews {
     %orig;
     axs_glassify_notify_applyToView((UIView *)self);
+    [self axs_glassify_sbez_applyEntranceIfNeeded];
+}
+
+- (void)dealloc {
+    [self axs_glassify_sbez_cleanup];
+    %orig;
 }
 
 - (void)willMoveToWindow:(UIWindow *)newWindow {
@@ -140,12 +158,19 @@ static void axs_glassify_notify_applyScheduledPreset(void) {
         [animator axs_glassify_notify_attachToView:(UIView *)self];
     } else {
         [animator axs_glassify_notify_detachView:(UIView *)self];
+        [self axs_glassify_sbez_cleanup];
     }
 }
 
 - (void)layoutSubviews {
     %orig;
     axs_glassify_notify_applyToView((UIView *)self);
+    [self axs_glassify_sbez_applyEntranceIfNeeded];
+}
+
+- (void)dealloc {
+    [self axs_glassify_sbez_cleanup];
+    %orig;
 }
 
 - (void)willMoveToWindow:(UIWindow *)newWindow {
@@ -172,6 +197,36 @@ static void axs_glassify_notify_applyScheduledPreset(void) {
 
 %hook NCNotificationListCell
 
+// ── S 形蜿蜒排列（v8 核心）：接管卡片自己的 setter ──
+// 系统（任何布局发起者）摆这张卡片最终都要经过这里。就地弯折后转交真实
+// setter，所以写者只有一个，不存在"我们写完系统又覆盖"的竞态 —— 这正是
+// v6（抢 transform 闪烁）与 v7（事后覆盖看不见）失败的根因。
+// 闸内那次 %orig 会同步重入本方法，BendFrame 靠闸标志原样放行。
+- (void)setFrame:(CGRect)frame {
+    CGRect bent;
+    if (axs_glassify_sbez_serpBendFrame((UIView *)self, frame, &bent)) {
+        axs_glassify_sbez_serpWriteBegin();
+        %orig(bent);
+        axs_glassify_sbez_serpWriteEnd();
+        return;
+    }
+    %orig;
+}
+
+// 有些布局代码走 center 而不是 frame（center 改不了尺寸，这条路上只有横向
+// 摆动，没有缩小）。两个 setter 都接管，诊断 bentF/bentC 分别计数，真机一眼
+// 看出系统实际用的是哪条路。
+- (void)setCenter:(CGPoint)center {
+    CGPoint bent;
+    if (axs_glassify_sbez_serpBendCenter((UIView *)self, center, &bent)) {
+        axs_glassify_sbez_serpWriteBegin();
+        %orig(bent);
+        axs_glassify_sbez_serpWriteEnd();
+        return;
+    }
+    %orig;
+}
+
 - (void)layoutSubviews {
     %orig;
     UIView *cell = (UIView *)self;
@@ -180,6 +235,8 @@ static void axs_glassify_notify_applyScheduledPreset(void) {
         return;
     }
     axs_glassify_notify_applyToView(cell);
+    // S 形横幅入场**不**挂到这里：这张 cell 属于列表，滚动入场 hook 已经在同一个
+    // layer 上放了一条 transform 动画，两条并存会互相顶掉。原工程也只 hook 横幅宿主。
 }
 
 %end

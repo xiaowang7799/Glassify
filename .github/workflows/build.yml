@@ -2,6 +2,10 @@ name: Build Glassify
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - master
   push:
     branches:
       - main
@@ -47,7 +51,7 @@ jobs:
       - name: Bump Package Version
         id: bump
         run: |
-          VERSION="6.6.0-${{ github.run_number }}"
+          VERSION="6.7.0-${{ github.run_number }}"
           echo "Using version: $VERSION"
           sed -i '' "s/^Version: .*/Version: ${VERSION}/" control
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
