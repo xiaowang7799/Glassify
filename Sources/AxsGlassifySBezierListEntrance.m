@@ -86,11 +86,12 @@ static void axs_glassify_sbez_serpGeometryForY(CGFloat y, CGFloat amplitude, CGF
     CGFloat phase = (CGFloat)M_PI * 2.0f * y / MAX(wavelength, 60.0f);
     CGFloat s = sinf(phase);
     *outX = amplitude * s;
-    // |sin| peaks at the crests/troughs where the lateral swing is maximal:
-    // a card is smallest exactly where the S turns, full-size at the crossings.
-    // fabs (double): CGFloat is a double on arm64, and fabsf triggers clang's
-    // -Wabsolute-value, which is an error in this toolchain.
-    *outScale = 1.0f - shrink * fabs(s);
+    // 用户定稿：不存在"回到中线就恢复整齐"。波峰/波谷（|sin|=1）缩到最大
+    // (1-shrink)；穿越中线的卡片也保留 0.35·shrink 的"穿越态"缩小，并且此刻
+    // 倾转恰为最大（cos=±1），所以整屏任何时候看都是一条连续的蛇形，
+    // 不会有一排全尺寸居中的正常卡片。
+    CGFloat a = fabs(s);
+    *outScale = 1.0f - shrink * (0.35f + 0.65f * a);
     // cos is the tangent's sign - the lean follows the ribbon direction.
     *outRot = tiltRad * cosf(phase);
 }
