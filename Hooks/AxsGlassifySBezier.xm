@@ -50,6 +50,10 @@
 %hook UIScrollView
 - (void)didMoveToWindow {
     %orig;
+    // 减弱动态效果没有公开通知，而"列表进窗口"每次解锁/拉通知中心都会发生,
+    // 且不在每帧热路径上 —— 在这里刷新镜像，用户改完系统设置下一次看锁屏
+    // 就会生效（以前只在配置保存时刷新，要等下次保存才响应）。
+    axs_glassify_sbez_serpUpdateGate();
     [self axs_glassify_sbez_noteAppeared];
 }
 

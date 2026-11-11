@@ -166,15 +166,23 @@ static BOOL axs_glassify_sbez_serpCGRectNear(CGRect a, CGRect b) {
         && fabs(a.size.width - b.size.width) < 1.0 && fabs(a.size.height - b.size.height) < 1.0;
 }
 
+// 摆幅上限的钳制边距：卡片边缘离屏幕边缘至少留这么多，永远不被裁掉。
+static const CGFloat axs_glassify_sbez_serpEdgeMargin = 6.0f;
+
 // 把系统交来的 frame 弯成 S：横向按 y 相位摆位，拐弯处缩小（保持中心不动)。
 // 纯函数：同一个输入永远同一个输出，所以系统重复摆位不会让画面变化。
-static CGRect axs_glassify_sbez_serpBendGeometry(CGRect sys) {
+//
+// 边缘钳制（真机截图反馈：摆幅拉满时卡片被屏幕边裁掉）：滑条只管"想摆多
+// 远"，代码负责"最多能摆多远" —— 把弯后的中心夹在 [margin+w/2, containerW-
+// margin-w/2] 里，摆幅再大也只是贴边，不会出屏。containerW<=0 表示调用方
+// 拿不到容器宽度，此时不钳制（保持纯函数语义）。
+static CGRect axs_glassify_sbez_serpBendGeometrySized(CGRect sys, CGFloat containerW) {
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
-    CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:28.0];
-    CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:260.0];
-    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.18];
+    CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:34.0];
+    CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
+    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.15];
     amp = MAX(0.0f, MIN(amp, 120.0f));
-    wavelength = MAX(80.0f, MIN(wavelength, 800.0f));
+    wavelength = MAX(120.0f, MIN(wavelength, 900.0f));
     shrink = MAX(0.0f, MIN(shrink, 0.5f));
     if (sys.size.width < 1.0f || sys.size.height < 1.0f) {
         return sys;
@@ -184,8 +192,30 @@ static CGRect axs_glassify_sbez_serpBendGeometry(CGRect sys) {
                                        amp, wavelength, shrink, &dx, &sc);
     CGFloat w = sys.size.width * sc;
     CGFloat h = sys.size.height * sc;
-    return CGRectMake(sys.origin.x + (sys.size.width - w) * 0.5f + dx,
+    CGFloat midX = sys.origin.x + sys.size.width * 0.5f + dx;
+    if (containerW > w + axs_glassify_sbez_serpEdgeMargin * 2.0f) {
+        CGFloat lo = axs_glassify_sbez_serpEdgeMargin + w * 0.5f;
+        CGFloat hi = containerW - axs_glassify_sbez_serpEdgeMargin - w * 0.5f;
+        midX = MAX(lo, MIN(hi, midX));
+    }
+    return CGRectMake(midX - w * 0.5f,
                       sys.origin.y + (sys.size.height - h) * 0.5f, w, h);
+}
+
+// 旧签名：不带钳制（登记表 bootstrap 用，那里拿不到可靠容器宽度）。
+static CGRect axs_glassify_sbez_serpBendGeometry(CGRect sys) {
+    return axs_glassify_sbez_serpBendGeometrySized(sys, 0.0f);
+}
+
+// 卡片所在容器的宽度：优先 superview，退化到屏幕宽 —— 两者都只在布局
+// 线程读一次，够便宜；拿不到时返回 0 表示不钳制。
+static CGFloat axs_glassify_sbez_serpContainerWidth(UIView *cell) {
+    UIView *host = cell.superview;
+    CGFloat w = host != nil ? CGRectGetWidth(host.bounds) : 0.0f;
+    if (w < 1.0f) {
+        w = [UIScreen mainScreen].bounds.size.width;
+    }
+    return w;
 }
 
 static void axs_glassify_sbez_serpDiag(void);
@@ -235,8 +265,8 @@ BOOL axs_glassify_sbez_serpBendFrame(UIView *cell, CGRect in, CGRect *out) {
         axs_glassify_sbez_serpFeedback++;
         return NO;
     }
-    *out = axs_glassify_sbez_serpBendGeometry(in);
-    if (CGRectEqualToRect(*out, in)) {
+    *out = axs_glassify_sbez_serpBendGeometrySized(in, axs_glassify_sbez_serpContainerWidth(cell));
+    if (axs_glassify_sbez_serpCGRectNear(*out, in)) {
         return NO;
     }
     // 铁律 2：基准 = 系统交进来的 in，绝不从 cell.frame 回推。
@@ -267,14 +297,21 @@ BOOL axs_glassify_sbez_serpBendCenter(UIView *cell, CGPoint in, CGPoint *out) {
         return NO;
     }
     AxsGlassifyNotifyConfig *config = [AxsGlassifyNotifyConfig axs_glassify_notify_shared];
-    CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:28.0];
-    CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:260.0];
-    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.18];
+    CGFloat amp = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_amp" defaultValue:34.0];
+    CGFloat wavelength = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_wavelength" defaultValue:520.0];
+    CGFloat shrink = (CGFloat)[config axs_glassify_notify_sbezDoubleForKey:@"sbz_serp_shrink" defaultValue:0.15];
     CGFloat dx, sc;
     axs_glassify_sbez_serpGeometryForY(in.y, MAX(0.0f, MIN(amp, 120.0f)),
-                                       MAX(80.0f, MIN(wavelength, 800.0f)),
+                                       MAX(120.0f, MIN(wavelength, 900.0f)),
                                        MAX(0.0f, MIN(shrink, 0.5f)), &dx, &sc);
-    *out = CGPointMake(in.x + dx, in.y);
+    CGFloat midX = in.x + dx;
+    CGFloat w = CGRectGetWidth(cell.bounds);
+    CGFloat containerW = axs_glassify_sbez_serpContainerWidth(cell);
+    if (containerW > w + axs_glassify_sbez_serpEdgeMargin * 2.0f) {
+        midX = MAX(axs_glassify_sbez_serpEdgeMargin + w * 0.5f,
+                   MIN(containerW - axs_glassify_sbez_serpEdgeMargin - w * 0.5f, midX));
+    }
+    *out = CGPointMake(midX, in.y);
     if (CGPointEqualToPoint(*out, in)) {
         return NO;
     }
