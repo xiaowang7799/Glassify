@@ -53,9 +53,12 @@
     [self axs_glassify_sbez_noteAppeared];
 }
 
-// S 形蜿蜒排列的滚动触发：setBounds: 在滚动时被调（含减速过程），
-// 一趟 pass 每 runloop 至多一次、只读配置、只写 cell layer 的 transform，
-// 不改本视图任何状态 —— 与列表布局无反馈回路（旧版死循环的根因）。
+// S 形蜿蜒排列的滚动触发。**只挂 setContentOffset:，不挂 setBounds:** ——
+// 原插件早期同时挂两者，setBounds: 会被列表布局路径自己调用，形成
+// 「改 bounds -> 触发 -> 布局」的反馈回路，正是当年把设备卡死的写法之一
+// （其 README 的 v5.2.0-12/13 记录）。setContentOffset: 只在真正滚动时
+// 被调用（含减速），是单向信号；一趟 pass 每 runloop 至多一次、只写
+// cell layer 的 transform、不改本视图任何状态 —— 回路不可能成立。
 - (void)setContentOffset:(CGPoint)contentOffset {
     %orig;
     [self axs_glassify_sbez_serpPassQueued];

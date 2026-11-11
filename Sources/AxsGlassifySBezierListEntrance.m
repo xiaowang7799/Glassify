@@ -88,7 +88,9 @@ static void axs_glassify_sbez_serpGeometryForY(CGFloat y, CGFloat amplitude, CGF
     *outX = amplitude * s;
     // |sin| peaks at the crests/troughs where the lateral swing is maximal:
     // a card is smallest exactly where the S turns, full-size at the crossings.
-    *outScale = 1.0f - shrink * fabsf(s);
+    // fabs (double): CGFloat is a double on arm64, and fabsf triggers clang's
+    // -Wabsolute-value, which is an error in this toolchain.
+    *outScale = 1.0f - shrink * fabs(s);
     // cos is the tangent's sign - the lean follows the ribbon direction.
     *outRot = tiltRad * cosf(phase);
 }
